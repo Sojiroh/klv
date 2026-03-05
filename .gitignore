@@ -3,4 +3,4 @@ dist/
 client-dist/
 *.js.map
 .env
-.idea/
+/.idea/
