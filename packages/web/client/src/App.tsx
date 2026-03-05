@@ -2,14 +2,7 @@ import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Logs from './pages/Logs';
 import Stream from './pages/Stream';
-
-function Placeholder({ name }: { name: string }) {
-  return (
-    <div className="flex items-center justify-center h-64">
-      <p className="text-gray-500 text-lg">{name} — Coming soon</p>
-    </div>
-  );
-}
+import Search from './pages/Search';
 
 const navItems = [
   { path: '/', label: 'Dashboard' },
@@ -43,7 +36,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/logs/:namespace/:pod" element={<Logs />} />
           <Route path="/stream" element={<Stream />} />
-          <Route path="/search" element={<Placeholder name="Search" />} />
+          <Route path="/search" element={<Search />} />
         </Routes>
       </main>
     </div>
