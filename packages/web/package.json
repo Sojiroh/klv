@@ -2,8 +2,10 @@
   "name": "@klv/web",
   "version": "0.1.0",
   "scripts": {
-    "build": "nest build",
+    "build:client": "cd client && npm run build",
+    "build": "npm run build:client && nest build",
     "dev": "nest start --watch",
+    "dev:client": "cd client && npm run dev",
     "start": "node dist/main.js"
   },
   "dependencies": {
