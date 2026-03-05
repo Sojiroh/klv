@@ -1,4 +1,5 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import Dashboard from './pages/Dashboard';
 
 function Placeholder({ name }: { name: string }) {
   return (
@@ -37,7 +38,7 @@ export default function App() {
       </nav>
       <main className="p-6">
         <Routes>
-          <Route path="/" element={<Placeholder name="Dashboard" />} />
+          <Route path="/" element={<Dashboard />} />
           <Route path="/logs/:namespace/:pod" element={<Placeholder name="Logs" />} />
           <Route path="/stream" element={<Placeholder name="Stream" />} />
           <Route path="/search" element={<Placeholder name="Search" />} />
