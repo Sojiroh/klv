@@ -1,6 +1,7 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Logs from './pages/Logs';
+import Stream from './pages/Stream';
 
 function Placeholder({ name }: { name: string }) {
   return (
@@ -41,7 +42,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/logs/:namespace/:pod" element={<Logs />} />
-          <Route path="/stream" element={<Placeholder name="Stream" />} />
+          <Route path="/stream" element={<Stream />} />
           <Route path="/search" element={<Placeholder name="Search" />} />
         </Routes>
       </main>
