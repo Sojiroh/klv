@@ -1,0 +1,27 @@
+{
+  "name": "@klv/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "klv": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@klv/core": "*",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^12.1.0",
+    "date-fns": "^3.6.0",
+    "ora": "^8.0.1",
+    "strip-ansi": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
