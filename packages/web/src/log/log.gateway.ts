@@ -59,6 +59,7 @@ export class LogGateway implements OnGatewayDisconnect {
             container: payload.container,
             follow: true,
             tailLines: 50,
+            timestamps: true,
           },
           (line, pod) => {
             const parsed = parseLogLine(line, pod);

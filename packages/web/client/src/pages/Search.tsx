@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { useApi } from '../hooks/useApi';
 import LogLine from '../components/LogLine';
+import LogDetailPanel from '../components/LogDetailPanel';
 
 interface ParsedLog {
   raw: string;
@@ -12,12 +14,26 @@ interface ParsedLog {
   extra: Record<string, unknown>;
 }
 
+interface Pod {
+  name: string;
+  containers: string[];
+}
+
 export default function Search() {
   const [namespace, setNamespace] = useState('default');
+  const [container, setContainer] = useState('');
   const [term, setTerm] = useState('');
   const [level, setLevel] = useState('');
   const [results, setResults] = useState<ParsedLog[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
+  const { data: namespaces } = useApi<string[]>('/api/namespaces');
+  const { data: pods } = useApi<Pod[]>(`/api/pods/${namespace}`);
+
+  const containers = useMemo(() => {
+    if (!pods) return [];
+    return [...new Set(pods.flatMap((p) => p.containers))];
+  }, [pods]);
 
   const handleSearch = async () => {
     if (!term.trim()) return;
@@ -31,6 +47,7 @@ export default function Search() {
       for (const pod of pods) {
         const params = new URLSearchParams({ search: term });
         if (level) params.set('level', level);
+        if (container) params.set('container', container);
         const res = await fetch(`/api/pods/${namespace}/${pod.name}/logs?${params}`);
         const data: { logs: ParsedLog[] } = await res.json();
         allLogs.push(...data.logs);
@@ -48,13 +65,25 @@ export default function Search() {
       <h2 className="text-lg font-semibold mb-4">Search</h2>
 
       <div className="flex items-center gap-3 mb-4">
-        <input
-          type="text"
+        <select
           value={namespace}
-          onChange={(e) => setNamespace(e.target.value)}
-          placeholder="Namespace"
-          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white w-32"
-        />
+          onChange={(e) => { setNamespace(e.target.value); setContainer(''); }}
+          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
+        >
+          {namespaces?.map((ns) => (
+            <option key={ns} value={ns}>{ns}</option>
+          )) ?? <option value="default">default</option>}
+        </select>
+        <select
+          value={container}
+          onChange={(e) => setContainer(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
+        >
+          <option value="">All containers</option>
+          {containers.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
         <input
           type="text"
           value={term}
@@ -96,7 +125,7 @@ export default function Search() {
                     {log.podName}
                   </span>
                 )}
-                <LogLine log={log} showRaw={false} />
+                <LogLine log={log} showRaw={false} onClick={setSelectedLog} />
               </div>
             ))}
             {results.length === 0 && (
@@ -105,6 +134,7 @@ export default function Search() {
           </div>
         </>
       )}
+      <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
     </div>
   );
 }

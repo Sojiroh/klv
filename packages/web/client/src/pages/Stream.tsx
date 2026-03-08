@@ -1,7 +1,21 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import { useStream } from '../hooks/useStream';
 import LogLine from '../components/LogLine';
+import LogDetailPanel from '../components/LogDetailPanel';
+
+interface ParsedLog {
+  raw: string;
+  isJson: boolean;
+  timestamp?: string;
+  level: string;
+  message: string;
+  service?: string;
+  podName?: string;
+  error?: string;
+  stackTrace?: string;
+  extra: Record<string, unknown>;
+}
 
 interface Pod {
   name: string;
@@ -13,7 +27,8 @@ interface Pod {
 
 export default function Stream() {
   const [namespace, setNamespace] = useState('default');
-  const [selectedPods, setSelectedPods] = useState<string[]>([]);
+  const [selectedContainer, setSelectedContainer] = useState('');
+  const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -28,22 +43,20 @@ export default function Stream() {
     }
   }, [logs, autoScroll, paused]);
 
+  const containers = useMemo(() => {
+    if (!pods) return [];
+    return [...new Set(pods.flatMap((p) => p.containers))];
+  }, [pods]);
+
+  const podCount = pods?.length ?? 0;
+
   const handleStart = () => {
-    if (selectedPods.length === 0) return;
-    start({ namespace, pods: selectedPods });
-  };
-
-  const togglePod = (name: string) => {
-    setSelectedPods((prev) =>
-      prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name],
-    );
-  };
-
-  const selectAll = () => {
-    if (!pods) return;
-    setSelectedPods(
-      selectedPods.length === pods.length ? [] : pods.map((p) => p.name),
-    );
+    if (!selectedContainer || !pods) return;
+    start({
+      namespace,
+      pods: pods.map((p) => p.name),
+      container: selectedContainer,
+    });
   };
 
   return (
@@ -60,40 +73,38 @@ export default function Stream() {
           <div className="flex items-center gap-4 mb-3">
             <select
               value={namespace}
-              onChange={(e) => { setNamespace(e.target.value); setSelectedPods([]); }}
+              onChange={(e) => { setNamespace(e.target.value); setSelectedContainer(''); }}
               className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
             >
               {namespaces?.map((ns) => (
                 <option key={ns} value={ns}>{ns}</option>
               ))}
             </select>
-            <button onClick={selectAll} className="text-xs text-gray-400 hover:text-white">
-              {selectedPods.length === (pods?.length ?? 0) ? 'Deselect all' : 'Select all'}
-            </button>
+            <span className="text-xs text-gray-500">{podCount} pod{podCount !== 1 ? 's' : ''}</span>
           </div>
 
           <div className="flex flex-wrap gap-2 mb-4">
-            {pods?.map((pod) => (
+            {containers.map((c) => (
               <button
-                key={pod.name}
-                onClick={() => togglePod(pod.name)}
+                key={c}
+                onClick={() => setSelectedContainer(selectedContainer === c ? '' : c)}
                 className={`px-3 py-1 text-xs rounded border font-mono ${
-                  selectedPods.includes(pod.name)
+                  selectedContainer === c
                     ? 'border-cyan-500 text-cyan-400 bg-cyan-500/10'
                     : 'border-gray-700 text-gray-400 hover:border-gray-500'
                 }`}
               >
-                {pod.name}
+                {c}
               </button>
             ))}
           </div>
 
           <button
             onClick={handleStart}
-            disabled={selectedPods.length === 0}
+            disabled={!selectedContainer}
             className="px-4 py-2 bg-cyan-600 text-white rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-cyan-500"
           >
-            Start streaming ({selectedPods.length} pods)
+            Start streaming ({podCount} pod{podCount !== 1 ? 's' : ''} / {selectedContainer || '...'})
           </button>
         </div>
       )}
@@ -126,13 +137,15 @@ export default function Stream() {
 
       <div className="bg-gray-900 rounded-lg p-4 overflow-auto max-h-[70vh]">
         {logs.map((log, i) => (
-          <LogLine key={i} log={log} showRaw={false} />
+          <LogLine key={i} log={log} showRaw={false} onClick={setSelectedLog} />
         ))}
         <div ref={logEndRef} />
         {logs.length === 0 && streaming && (
           <p className="text-gray-500 text-center py-4">Waiting for logs...</p>
         )}
       </div>
+
+      <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
     </div>
   );
 }

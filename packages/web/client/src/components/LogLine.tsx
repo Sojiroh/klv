@@ -26,6 +26,19 @@ const levelIcons: Record<string, string> = {
   WARN: '\u25B2', ERROR: '\u2716', FATAL: '\u2620', UNKNOWN: '?',
 };
 
+function prettyRaw(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    // raw may have a K8s timestamp prefix before the JSON
+    const match = raw.match(/^\S+\s+([\[{].*)$/s);
+    if (match) {
+      try { return JSON.stringify(JSON.parse(match[1]), null, 2); } catch { /* fall through */ }
+    }
+    return raw;
+  }
+}
+
 function formatTime(ts?: string): string {
   if (!ts) return '--:--:--';
   try {
@@ -36,17 +49,23 @@ function formatTime(ts?: string): string {
   }
 }
 
-export default function LogLine({ log, showRaw }: { log: ParsedLog; showRaw: boolean }) {
+export default function LogLine({ log, showRaw, onClick }: { log: ParsedLog; showRaw: boolean; onClick?: (log: ParsedLog) => void }) {
   if (showRaw) {
     return (
-      <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap py-0.5">
-        {log.isJson ? JSON.stringify(JSON.parse(log.raw), null, 2) : log.raw}
+      <pre
+        className={`text-xs text-gray-300 font-mono whitespace-pre-wrap py-0.5 ${onClick ? 'cursor-pointer hover:bg-gray-800/50' : ''}`}
+        onClick={() => onClick?.(log)}
+      >
+        {log.isJson ? prettyRaw(log.raw) : log.raw}
       </pre>
     );
   }
 
   return (
-    <div className="font-mono text-xs py-0.5 flex gap-2 hover:bg-gray-900/30">
+    <div
+      className={`font-mono text-xs py-0.5 flex gap-2 hover:bg-gray-900/30 ${onClick ? 'cursor-pointer' : ''}`}
+      onClick={() => onClick?.(log)}
+    >
       <span className="text-gray-500 shrink-0">{formatTime(log.timestamp)}</span>
       <span className={`shrink-0 w-14 ${levelColors[log.level] ?? 'text-gray-400'}`}>
         {levelIcons[log.level] ?? '?'} {log.level.padEnd(5)}

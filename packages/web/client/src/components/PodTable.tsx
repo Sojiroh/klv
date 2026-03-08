@@ -41,7 +41,23 @@ export default function PodTable({ pods, namespace }: { pods: Pod[]; namespace: 
             <td className={`py-2 px-3 ${statusColor[pod.status] ?? 'text-gray-400'}`}>
               {pod.status}
             </td>
-            <td className="py-2 px-3 text-gray-400">{pod.containers.join(', ')}</td>
+            <td className="py-2 px-3">
+              {pod.containers.length === 1 ? (
+                <span className="text-gray-400">{pod.containers[0]}</span>
+              ) : (
+                <span className="flex flex-wrap gap-1">
+                  {pod.containers.map((c) => (
+                    <Link
+                      key={c}
+                      to={`/logs/${namespace}/${pod.name}?container=${encodeURIComponent(c)}`}
+                      className="text-cyan-400 hover:text-cyan-300 text-xs bg-gray-800 px-1.5 py-0.5 rounded border border-gray-700 hover:border-cyan-500"
+                    >
+                      {c}
+                    </Link>
+                  ))}
+                </span>
+              )}
+            </td>
             <td className="py-2 px-3 text-gray-400">{pod.age}</td>
             <td className="py-2 px-3">
               <Link

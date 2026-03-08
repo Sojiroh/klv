@@ -21,6 +21,7 @@ export class LogService {
       container: options.container,
       tailLines: options.tail ?? 100,
       sinceSeconds: options.since,
+      timestamps: true,
     });
 
     const lines = raw.split('\n').filter((l) => l.trim());
