@@ -2,5 +2,6 @@ node_modules/
 dist/
 client-dist/
 *.js.map
+*.tsbuildinfo
 .env
 /.idea/

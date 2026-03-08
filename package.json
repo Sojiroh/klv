@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build:core && npm run build -w @klv/cli && npm run build:web",
     "build:core": "npm run build -w @klv/core",
     "build:cli": "npm run build -w @klv/cli",
     "build:web": "npm run build -w @klv/web",
