@@ -49,7 +49,7 @@ function formatTime(ts?: string): string {
   }
 }
 
-export default function LogLine({ log, showRaw, onClick }: { log: ParsedLog; showRaw: boolean; onClick?: (log: ParsedLog) => void }) {
+export default function LogLine({ log, showRaw, onClick, showPodName = false }: { log: ParsedLog; showRaw: boolean; onClick?: (log: ParsedLog) => void; showPodName?: boolean }) {
   if (showRaw) {
     return (
       <pre
@@ -70,6 +70,11 @@ export default function LogLine({ log, showRaw, onClick }: { log: ParsedLog; sho
       <span className={`shrink-0 w-14 ${levelColors[log.level] ?? 'text-gray-400'}`}>
         {levelIcons[log.level] ?? '?'} {log.level.padEnd(5)}
       </span>
+      {showPodName && log.podName && (
+        <span className="text-purple-400 shrink-0 truncate max-w-[12ch]" title={log.podName}>
+          [{log.podName.slice(-8)}]
+        </span>
+      )}
       {log.service && <span className="text-blue-400 shrink-0">({log.service})</span>}
       <span className={log.level === 'ERROR' || log.level === 'FATAL' ? 'text-red-300' : 'text-gray-200'}>
         {log.message}

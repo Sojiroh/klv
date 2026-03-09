@@ -5,6 +5,25 @@ import { LogService } from './log.service';
 export class LogController {
   constructor(private readonly logService: LogService) {}
 
+  @Get('pods/:namespace/container/:container/logs')
+  getContainerLogs(
+    @Param('namespace') namespace: string,
+    @Param('container') container: string,
+    @Query('tail') tail?: string,
+    @Query('since') since?: string,
+    @Query('level') level?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.logService.getAggregatedLogs({
+      namespace,
+      container,
+      tail: tail ? parseInt(tail, 10) : undefined,
+      since: since ? parseInt(since, 10) : undefined,
+      level,
+      search,
+    });
+  }
+
   @Get('pods/:namespace/:pod/logs')
   getLogs(
     @Param('namespace') namespace: string,

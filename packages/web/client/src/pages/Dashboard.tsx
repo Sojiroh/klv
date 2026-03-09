@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApi } from '../hooks/useApi';
 import ContextSelector from '../components/ContextSelector';
-import PodTable from '../components/PodTable';
+import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
 
 interface ContextsResponse {
   contexts: string[];
@@ -22,6 +22,18 @@ export default function Dashboard() {
   const { data: namespaces } = useApi<string[]>('/api/namespaces');
   const { data: pods, loading } = useApi<Pod[]>(`/api/pods/${namespace}`);
 
+  const groups = Object.values(
+    (pods ?? []).reduce<Record<string, ContainerGroup>>((acc, pod) => {
+      for (const c of pod.containers) {
+        if (!acc[c]) acc[c] = { container: c, podCount: 0, statuses: [], pods: [] };
+        acc[c].podCount++;
+        acc[c].pods.push({ name: pod.name, status: pod.status, age: pod.age });
+        if (!acc[c].statuses.includes(pod.status)) acc[c].statuses.push(pod.status);
+      }
+      return acc;
+    }, {}),
+  );
+
   const handleContextSwitch = async (name: string) => {
     await fetch(`/api/contexts/${name}`, { method: 'PUT' });
     window.location.reload();
@@ -41,11 +53,11 @@ export default function Dashboard() {
       )}
 
       <h2 className="text-lg font-semibold mb-4">
-        Pods in <span className="text-cyan-400">{namespace}</span>
+        Containers in <span className="text-cyan-400">{namespace}</span>
       </h2>
 
-      {loading && <p className="text-gray-500">Loading pods...</p>}
-      {pods && <PodTable pods={pods} namespace={namespace} />}
+      {loading && <p className="text-gray-500">Loading containers...</p>}
+      {groups.length > 0 && <ContainerTable groups={groups} namespace={namespace} />}
     </div>
   );
 }

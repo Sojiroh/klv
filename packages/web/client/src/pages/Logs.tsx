@@ -24,19 +24,20 @@ interface PodInfo {
 }
 
 export default function Logs() {
-  const { namespace, pod } = useParams<{ namespace: string; pod: string }>();
+  const { namespace, pod, container: containerParam } = useParams<{
+    namespace: string;
+    pod?: string;
+    container?: string;
+  }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [level, setLevel] = useState('');
   const [search, setSearch] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
 
-  const container = searchParams.get('container') ?? '';
+  const isAggregated = !pod && !!containerParam;
 
-  const { data: pods } = useApi<PodInfo[]>(`/api/pods/${namespace}`);
-  const currentPod = pods?.find((p) => p.name === pod);
-  const containers = currentPod?.containers ?? [];
-  const isMultiContainer = containers.length > 1;
+  const containerFromQuery = searchParams.get('container') ?? '';
 
   const handleContainerChange = (c: string) => {
     const next = new URLSearchParams(searchParams);
@@ -48,14 +49,24 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   };
 
+  // Single-pod mode: fetch pod info for container selector
+  const { data: pods } = useApi<PodInfo[]>(
+    !isAggregated ? `/api/pods/${namespace}` : null,
+  );
+  const currentPod = pods?.find((p) => p.name === pod);
+  const containers = currentPod?.containers ?? [];
+  const isMultiContainer = containers.length > 1;
+
   const params = new URLSearchParams();
-  if (container) params.set('container', container);
+  if (!isAggregated && containerFromQuery) params.set('container', containerFromQuery);
   if (level) params.set('level', level);
   if (search) params.set('search', search);
 
-  const { data, loading } = useApi<{ logs: ParsedLog[]; total: number }>(
-    `/api/pods/${namespace}/${pod}/logs?${params.toString()}`
-  );
+  const apiUrl = isAggregated
+    ? `/api/pods/${namespace}/container/${containerParam}/logs?${params.toString()}`
+    : `/api/pods/${namespace}/${pod}/logs?${params.toString()}`;
+
+  const { data, loading } = useApi<{ logs: ParsedLog[]; total: number; pods?: string[] }>(apiUrl);
 
   return (
     <div>
@@ -63,14 +74,27 @@ export default function Logs() {
         <Link to="/" className="text-gray-400 hover:text-white text-sm">&larr; Back</Link>
         <h2 className="text-lg font-semibold">
           <span className="text-gray-400">{namespace}/</span>
-          <span className="text-cyan-400">{pod}</span>
-          {container && (
-            <span className="text-purple-400 text-sm ml-2">({container})</span>
+          {isAggregated ? (
+            <>
+              <span className="text-cyan-400">{containerParam}</span>
+              {data?.pods && (
+                <span className="text-gray-500 text-sm ml-2">
+                  ({data.pods.length} pods)
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-cyan-400">{pod}</span>
+              {containerFromQuery && (
+                <span className="text-purple-400 text-sm ml-2">({containerFromQuery})</span>
+              )}
+            </>
           )}
         </h2>
-        {isMultiContainer && (
+        {!isAggregated && isMultiContainer && (
           <select
-            value={container}
+            value={containerFromQuery}
             onChange={(e) => handleContainerChange(e.target.value)}
             className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
           >
@@ -100,7 +124,7 @@ export default function Logs() {
 
       <div className="bg-gray-900 rounded-lg p-4 overflow-auto max-h-[70vh]">
         {data?.logs.map((log, i) => (
-          <LogLine key={i} log={log} showRaw={showRaw} onClick={setSelectedLog} />
+          <LogLine key={i} log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
         ))}
         {data?.logs.length === 0 && (
           <p className="text-gray-500 text-center py-4">No logs found</p>

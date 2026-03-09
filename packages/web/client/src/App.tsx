@@ -34,6 +34,7 @@ export default function App() {
       <main className="p-6">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/logs/:namespace/container/:container" element={<Logs />} />
           <Route path="/logs/:namespace/:pod" element={<Logs />} />
           <Route path="/stream" element={<Stream />} />
           <Route path="/search" element={<Search />} />
