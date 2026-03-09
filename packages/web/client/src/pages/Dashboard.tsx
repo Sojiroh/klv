@@ -40,7 +40,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div>
+    <div className="stagger-children">
       {ctxData && namespaces && (
         <ContextSelector
           contexts={ctxData.contexts}
@@ -52,11 +52,21 @@ export default function Dashboard() {
         />
       )}
 
-      <h2 className="text-lg font-semibold mb-4">
-        Containers in <span className="text-cyan-400">{namespace}</span>
-      </h2>
+      <div className="flex items-baseline gap-3 mb-5">
+        <h2 className="text-xl font-display font-bold tracking-tight">
+          Containers
+        </h2>
+        <span className="text-sm text-klv-text-muted">
+          in <span className="text-klv-accent font-mono">{namespace}</span>
+        </span>
+      </div>
 
-      {loading && <p className="text-gray-500">Loading containers...</p>}
+      {loading && (
+        <div className="klv-card px-6 py-12 text-center animate-pulse">
+          <p className="text-klv-text-muted font-body">Loading containers...</p>
+        </div>
+      )}
+
       {groups.length > 0 && <ContainerTable groups={groups} namespace={namespace} />}
     </div>
   );

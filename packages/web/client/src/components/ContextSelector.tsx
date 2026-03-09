@@ -12,28 +12,34 @@ export default function ContextSelector({
   namespaces, namespace, onNamespaceChange,
 }: Props) {
   return (
-    <div className="flex items-center gap-4 mb-6">
-      <label className="text-sm text-gray-400">Context:</label>
-      <select
-        value={current}
-        onChange={(e) => onSwitch(e.target.value)}
-        className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-      >
-        {contexts.map((ctx) => (
-          <option key={ctx} value={ctx}>{ctx}</option>
-        ))}
-      </select>
+    <div className="flex flex-wrap items-center gap-6 mb-8 animate-slide-up">
+      <div className="flex items-center gap-2">
+        <span className="klv-section-label">Context</span>
+        <select
+          value={current}
+          onChange={(e) => onSwitch(e.target.value)}
+          className="klv-select"
+        >
+          {contexts.map((ctx) => (
+            <option key={ctx} value={ctx}>{ctx}</option>
+          ))}
+        </select>
+      </div>
 
-      <label className="text-sm text-gray-400 ml-4">Namespace:</label>
-      <select
-        value={namespace}
-        onChange={(e) => onNamespaceChange(e.target.value)}
-        className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-      >
-        {namespaces.map((ns) => (
-          <option key={ns} value={ns}>{ns}</option>
-        ))}
-      </select>
+      <div className="w-px h-6 bg-klv-border hidden sm:block" />
+
+      <div className="flex items-center gap-2">
+        <span className="klv-section-label">Namespace</span>
+        <select
+          value={namespace}
+          onChange={(e) => onNamespaceChange(e.target.value)}
+          className="klv-select"
+        >
+          {namespaces.map((ns) => (
+            <option key={ns} value={ns}>{ns}</option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

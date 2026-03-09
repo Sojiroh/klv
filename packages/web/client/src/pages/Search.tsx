@@ -39,7 +39,6 @@ export default function Search() {
     if (!term.trim()) return;
     setLoading(true);
     try {
-      // Search across all pods by fetching pods, then logs for each
       const podsRes = await fetch(`/api/pods/${namespace}`);
       const pods: { name: string }[] = await podsRes.json();
 
@@ -61,67 +60,105 @@ export default function Search() {
   };
 
   return (
-    <div>
-      <h2 className="text-lg font-semibold mb-4">Search</h2>
+    <div className="stagger-children">
+      <h2 className="text-xl font-display font-bold tracking-tight mb-6">Search</h2>
 
-      <div className="flex items-center gap-3 mb-4">
-        <select
-          value={namespace}
-          onChange={(e) => { setNamespace(e.target.value); setContainer(''); }}
-          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-        >
-          {namespaces?.map((ns) => (
-            <option key={ns} value={ns}>{ns}</option>
-          )) ?? <option value="default">default</option>}
-        </select>
-        <select
-          value={container}
-          onChange={(e) => setContainer(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-        >
-          <option value="">All containers</option>
-          {containers.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-        <input
-          type="text"
-          value={term}
-          onChange={(e) => setTerm(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          placeholder="Search term..."
-          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white flex-1 max-w-md"
-        />
-        <select
-          value={level}
-          onChange={(e) => setLevel(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
-        >
-          <option value="">All levels</option>
-          <option value="DEBUG">DEBUG</option>
-          <option value="INFO">INFO</option>
-          <option value="WARN">WARN</option>
-          <option value="ERROR">ERROR</option>
-        </select>
-        <button
-          onClick={handleSearch}
-          disabled={loading || !term.trim()}
-          className="px-4 py-1.5 bg-cyan-600 text-white rounded text-sm disabled:opacity-50 hover:bg-cyan-500"
-        >
-          {loading ? 'Searching...' : 'Search'}
-        </button>
+      {/* Search form */}
+      <div className="klv-card p-5 mb-5">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="klv-section-label">Namespace</span>
+            <select
+              value={namespace}
+              onChange={(e) => { setNamespace(e.target.value); setContainer(''); }}
+              className="klv-select"
+            >
+              {namespaces?.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              )) ?? <option value="default">default</option>}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <span className="klv-section-label">Container</span>
+            <select
+              value={container}
+              onChange={(e) => setContainer(e.target.value)}
+              className="klv-select"
+            >
+              <option value="">All containers</option>
+              {containers.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+            <span className="klv-section-label">Search term</span>
+            <div className="relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-klv-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="text"
+                value={term}
+                onChange={(e) => setTerm(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="Search across all pods..."
+                className="klv-input w-full pl-9"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <span className="klv-section-label">Level</span>
+            <select
+              value={level}
+              onChange={(e) => setLevel(e.target.value)}
+              className="klv-select"
+            >
+              <option value="">All levels</option>
+              <option value="DEBUG">DEBUG</option>
+              <option value="INFO">INFO</option>
+              <option value="WARN">WARN</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+          </div>
+
+          <button
+            onClick={handleSearch}
+            disabled={loading || !term.trim()}
+            className="klv-btn-primary"
+          >
+            {loading ? (
+              <span className="flex items-center gap-2">
+                <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Searching...
+              </span>
+            ) : (
+              'Search'
+            )}
+          </button>
+        </div>
       </div>
 
+      {/* Results */}
       {results !== null && (
-        <>
-          <p className="text-sm text-gray-400 mb-3">
-            {results.length} result{results.length !== 1 ? 's' : ''} for "{term}"
-          </p>
-          <div className="bg-gray-900 rounded-lg p-4 overflow-auto max-h-[70vh]">
+        <div className="animate-slide-up">
+          <div className="flex items-baseline gap-2 mb-3">
+            <span className="text-sm text-klv-text-secondary font-body">
+              {results.length} result{results.length !== 1 ? 's' : ''}
+            </span>
+            <span className="text-sm text-klv-text-muted">
+              for <span className="font-mono text-klv-accent">"{term}"</span>
+            </span>
+          </div>
+
+          <div className="klv-log-container">
             {results.map((log, i) => (
               <div key={i} className="flex gap-2 items-start">
                 {log.podName && (
-                  <span className="text-purple-400 font-mono text-xs shrink-0 w-40 truncate">
+                  <span className="text-violet-400/80 font-mono text-xs shrink-0 w-40 truncate px-3 py-[5px]">
                     {log.podName}
                   </span>
                 )}
@@ -129,11 +166,12 @@ export default function Search() {
               </div>
             ))}
             {results.length === 0 && (
-              <p className="text-gray-500 text-center py-4">No results found</p>
+              <p className="text-klv-text-muted text-center py-8 text-sm">No results found</p>
             )}
           </div>
-        </>
+        </div>
       )}
+
       <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
     </div>
   );
