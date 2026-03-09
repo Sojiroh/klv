@@ -49,7 +49,6 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   };
 
-  // Single-pod mode: fetch pod info for container selector
   const { data: pods } = useApi<PodInfo[]>(
     !isAggregated ? `/api/pods/${namespace}` : null,
   );
@@ -69,69 +68,89 @@ export default function Logs() {
   const { data, loading } = useApi<{ logs: ParsedLog[]; total: number; pods?: string[] }>(apiUrl);
 
   return (
-    <div>
-      <div className="flex items-center gap-3 mb-4">
-        <Link to="/" className="text-gray-400 hover:text-white text-sm">&larr; Back</Link>
-        <h2 className="text-lg font-semibold">
-          <span className="text-gray-400">{namespace}/</span>
-          {isAggregated ? (
-            <>
-              <span className="text-cyan-400">{containerParam}</span>
-              {data?.pods && (
-                <span className="text-gray-500 text-sm ml-2">
-                  ({data.pods.length} pods)
-                </span>
-              )}
-            </>
-          ) : (
-            <>
-              <span className="text-cyan-400">{pod}</span>
-              {containerFromQuery && (
-                <span className="text-purple-400 text-sm ml-2">({containerFromQuery})</span>
-              )}
-            </>
-          )}
-        </h2>
-        {!isAggregated && isMultiContainer && (
-          <select
-            value={containerFromQuery}
-            onChange={(e) => handleContainerChange(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white"
+    <>
+      <div className="stagger-children">
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-5">
+          <Link
+            to="/"
+            className="w-7 h-7 flex items-center justify-center rounded-md
+                       text-klv-text-muted hover:text-klv-text hover:bg-klv-elevated transition-colors"
           >
-            <option value="">Default container</option>
-            {containers.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        )}
-        {data && (
-          <span className="text-xs text-gray-500">
-            {data.logs.length}/{data.total} logs
-          </span>
-        )}
-      </div>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </Link>
 
-      <LogFilters
-        level={level}
-        search={search}
-        showRaw={showRaw}
-        onLevelChange={setLevel}
-        onSearchChange={setSearch}
-        onRawToggle={() => setShowRaw(!showRaw)}
-      />
+          <h2 className="text-xl font-display font-bold tracking-tight flex items-baseline gap-2">
+            <span className="text-klv-text-muted text-sm font-mono">{namespace}/</span>
+            {isAggregated ? (
+              <>
+                <span className="text-klv-accent">{containerParam}</span>
+                {data?.pods && (
+                  <span className="klv-badge bg-klv-elevated text-klv-text-muted border border-klv-border text-[10px]">
+                    {data.pods.length} pods
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="text-klv-accent">{pod}</span>
+                {containerFromQuery && (
+                  <span className="klv-badge bg-violet-500/10 text-violet-400 border border-violet-500/20 text-[10px]">
+                    {containerFromQuery}
+                  </span>
+                )}
+              </>
+            )}
+          </h2>
 
-      {loading && <p className="text-gray-500">Loading logs...</p>}
+          {!isAggregated && isMultiContainer && (
+            <select
+              value={containerFromQuery}
+              onChange={(e) => handleContainerChange(e.target.value)}
+              className="klv-select text-xs"
+            >
+              <option value="">Default container</option>
+              {containers.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          )}
 
-      <div className="bg-gray-900 rounded-lg p-4 overflow-auto max-h-[70vh]">
-        {data?.logs.map((log, i) => (
-          <LogLine key={i} log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
-        ))}
-        {data?.logs.length === 0 && (
-          <p className="text-gray-500 text-center py-4">No logs found</p>
+          {data && (
+            <span className="text-xs text-klv-text-muted font-mono ml-auto">
+              {data.logs.length}<span className="text-klv-border mx-1">/</span>{data.total}
+            </span>
+          )}
+        </div>
+
+        <LogFilters
+          level={level}
+          search={search}
+          showRaw={showRaw}
+          onLevelChange={setLevel}
+          onSearchChange={setSearch}
+          onRawToggle={() => setShowRaw(!showRaw)}
+        />
+
+        {loading && (
+          <div className="klv-card px-6 py-12 text-center animate-pulse">
+            <p className="text-klv-text-muted">Loading logs...</p>
+          </div>
         )}
+
+        <div className="klv-log-container">
+          {data?.logs.map((log, i) => (
+            <LogLine key={i} log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
+          ))}
+          {data?.logs.length === 0 && (
+            <p className="text-klv-text-muted text-center py-8 text-sm">No logs found</p>
+          )}
+        </div>
       </div>
 
       <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
-    </div>
+    </>
   );
 }

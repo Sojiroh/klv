@@ -14,13 +14,23 @@ interface ParsedLog {
 }
 
 const levelColors: Record<string, string> = {
-  TRACE: 'text-gray-500',
-  DEBUG: 'text-cyan-400',
-  INFO: 'text-green-400',
-  WARN: 'text-yellow-400',
+  TRACE: 'text-zinc-500',
+  DEBUG: 'text-sky-400',
+  INFO: 'text-emerald-400',
+  WARN: 'text-amber-400',
   ERROR: 'text-red-400',
-  FATAL: 'text-red-600',
-  UNKNOWN: 'text-gray-400',
+  FATAL: 'text-red-500',
+  UNKNOWN: 'text-zinc-400',
+};
+
+const levelBg: Record<string, string> = {
+  TRACE: 'bg-zinc-500/10',
+  DEBUG: 'bg-sky-400/10',
+  INFO: 'bg-emerald-400/10',
+  WARN: 'bg-amber-400/10',
+  ERROR: 'bg-red-400/10',
+  FATAL: 'bg-red-500/15',
+  UNKNOWN: 'bg-zinc-400/10',
 };
 
 function prettyRaw(raw: string): string {
@@ -46,9 +56,9 @@ function formatTimestamp(ts?: string): string {
 
 function Field({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="flex gap-2 py-1">
-      <span className="text-gray-500 shrink-0 w-24">{label}</span>
-      <span className={color ?? 'text-gray-200'}>{value}</span>
+    <div className="flex gap-3 py-1.5 border-b border-klv-border-subtle last:border-0">
+      <span className="text-klv-text-muted shrink-0 w-20 text-right">{label}</span>
+      <span className={`${color ?? 'text-klv-text-secondary'} break-all`}>{value}</span>
     </div>
   );
 }
@@ -69,41 +79,49 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 bg-black/50 z-40 transition-opacity duration-200 ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-black/40 z-40 transition-opacity duration-300
+                    ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={onClose}
       />
 
       {/* Panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-1/2 max-w-2xl bg-gray-900 border-l border-gray-700 z-50 transform transition-transform duration-200 ease-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed top-0 right-0 h-full w-full sm:w-[520px] lg:w-[600px]
+                    bg-klv-surface border-l border-klv-border z-50
+                    transition-transform duration-300 ease-out
+                    ${open ? 'translate-x-0' : 'translate-x-full'}`}
       >
         {log && (
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-klv-border">
               <div className="flex items-center gap-3">
-                <span className={`text-sm font-semibold ${levelColors[log.level] ?? 'text-gray-400'}`}>
+                <span className={`klv-badge ${levelBg[log.level] ?? ''} ${levelColors[log.level] ?? 'text-zinc-400'} font-semibold`}>
                   {log.level}
                 </span>
-                <span className="text-xs text-gray-500">{formatTimestamp(log.timestamp)}</span>
+                <span className="text-xs text-klv-text-muted font-mono">{formatTimestamp(log.timestamp)}</span>
               </div>
               <button
                 onClick={onClose}
-                className="text-gray-400 hover:text-white text-lg px-2"
+                className="w-7 h-7 flex items-center justify-center rounded-md
+                           text-klv-text-muted hover:text-klv-text hover:bg-klv-elevated
+                           transition-colors"
               >
-                ✕
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-auto p-4 space-y-4">
-              {/* Parsed fields */}
+            <div className="flex-1 overflow-auto p-5 space-y-5">
+              {/* Fields */}
               <section>
-                <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">Fields</h3>
-                <div className="font-mono text-xs">
+                <h3 className="klv-section-label mb-2">Fields</h3>
+                <div className="klv-card p-3 font-mono text-xs">
                   <Field label="message" value={log.message} />
-                  {log.service && <Field label="service" value={log.service} color="text-blue-400" />}
-                  {log.podName && <Field label="pod" value={log.podName} color="text-purple-400" />}
+                  {log.service && <Field label="service" value={log.service} color="text-sky-400" />}
+                  {log.podName && <Field label="pod" value={log.podName} color="text-violet-400" />}
                   {log.error && <Field label="error" value={log.error} color="text-red-400" />}
                 </div>
               </section>
@@ -111,8 +129,9 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
               {/* Stack trace */}
               {log.stackTrace && (
                 <section>
-                  <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">Stack Trace</h3>
-                  <pre className="text-xs text-red-300 font-mono bg-gray-950 rounded p-3 overflow-auto whitespace-pre-wrap">
+                  <h3 className="klv-section-label mb-2">Stack Trace</h3>
+                  <pre className="text-xs text-red-300/90 font-mono bg-red-950/20 border border-red-900/30
+                                  rounded-lg p-4 overflow-auto whitespace-pre-wrap">
                     {log.stackTrace}
                   </pre>
                 </section>
@@ -121,17 +140,19 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
               {/* Extra fields */}
               {Object.keys(log.extra).length > 0 && (
                 <section>
-                  <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">Extra</h3>
-                  <pre className="text-xs text-gray-300 font-mono bg-gray-950 rounded p-3 overflow-auto whitespace-pre-wrap">
+                  <h3 className="klv-section-label mb-2">Extra</h3>
+                  <pre className="text-xs text-klv-text-secondary font-mono bg-klv-base rounded-lg
+                                  border border-klv-border p-4 overflow-auto whitespace-pre-wrap">
                     {JSON.stringify(log.extra, null, 2)}
                   </pre>
                 </section>
               )}
 
-              {/* Raw JSON */}
+              {/* Raw */}
               <section>
-                <h3 className="text-xs font-semibold text-gray-400 uppercase mb-2">Raw</h3>
-                <pre className="text-xs text-gray-300 font-mono bg-gray-950 rounded p-3 overflow-auto whitespace-pre-wrap">
+                <h3 className="klv-section-label mb-2">Raw</h3>
+                <pre className="text-xs text-klv-text-secondary font-mono bg-klv-base rounded-lg
+                                border border-klv-border p-4 overflow-auto whitespace-pre-wrap">
                   {log.isJson ? prettyRaw(log.raw) : log.raw}
                 </pre>
               </section>

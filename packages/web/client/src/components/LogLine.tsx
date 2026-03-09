@@ -11,26 +11,20 @@ interface ParsedLog {
   extra: Record<string, unknown>;
 }
 
-const levelColors: Record<string, string> = {
-  TRACE: 'text-gray-500',
-  DEBUG: 'text-cyan-400',
-  INFO: 'text-green-400',
-  WARN: 'text-yellow-400',
-  ERROR: 'text-red-400',
-  FATAL: 'text-red-600 font-bold',
-  UNKNOWN: 'text-gray-400',
-};
-
-const levelIcons: Record<string, string> = {
-  TRACE: '\u00B7', DEBUG: '\u25CB', INFO: '\u25CF',
-  WARN: '\u25B2', ERROR: '\u2716', FATAL: '\u2620', UNKNOWN: '?',
+const levelConfig: Record<string, { color: string; bg: string; icon: string }> = {
+  TRACE: { color: 'text-zinc-500', bg: 'bg-zinc-500/10', icon: '·' },
+  DEBUG: { color: 'text-sky-400', bg: 'bg-sky-400/10', icon: '●' },
+  INFO:  { color: 'text-emerald-400', bg: 'bg-emerald-400/10', icon: '●' },
+  WARN:  { color: 'text-amber-400', bg: 'bg-amber-400/10', icon: '▲' },
+  ERROR: { color: 'text-red-400', bg: 'bg-red-400/10', icon: '✕' },
+  FATAL: { color: 'text-red-500 font-semibold', bg: 'bg-red-500/15', icon: '☠' },
+  UNKNOWN: { color: 'text-zinc-400', bg: 'bg-zinc-400/10', icon: '?' },
 };
 
 function prettyRaw(raw: string): string {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2);
   } catch {
-    // raw may have a K8s timestamp prefix before the JSON
     const match = raw.match(/^\S+\s+([\[{].*)$/s);
     if (match) {
       try { return JSON.stringify(JSON.parse(match[1]), null, 2); } catch { /* fall through */ }
@@ -50,10 +44,14 @@ function formatTime(ts?: string): string {
 }
 
 export default function LogLine({ log, showRaw, onClick, showPodName = false }: { log: ParsedLog; showRaw: boolean; onClick?: (log: ParsedLog) => void; showPodName?: boolean }) {
+  const cfg = levelConfig[log.level] ?? levelConfig.UNKNOWN;
+
   if (showRaw) {
     return (
       <pre
-        className={`text-xs text-gray-300 font-mono whitespace-pre-wrap py-0.5 ${onClick ? 'cursor-pointer hover:bg-gray-800/50' : ''}`}
+        className={`text-xs text-klv-text-secondary font-mono whitespace-pre-wrap px-3 py-1
+                    border-l-2 border-transparent hover:border-klv-accent/30
+                    ${onClick ? 'cursor-pointer hover:bg-klv-elevated/50' : ''} transition-colors duration-100`}
         onClick={() => onClick?.(log)}
       >
         {log.isJson ? prettyRaw(log.raw) : log.raw}
@@ -63,20 +61,34 @@ export default function LogLine({ log, showRaw, onClick, showPodName = false }: 
 
   return (
     <div
-      className={`font-mono text-xs py-0.5 flex gap-2 hover:bg-gray-900/30 ${onClick ? 'cursor-pointer' : ''}`}
+      className={`font-mono text-xs flex items-start gap-2 px-3 py-[5px]
+                  border-l-2 border-transparent hover:border-klv-accent/40 hover:bg-klv-elevated/40
+                  ${onClick ? 'cursor-pointer' : ''} transition-all duration-100 group`}
       onClick={() => onClick?.(log)}
     >
-      <span className="text-gray-500 shrink-0">{formatTime(log.timestamp)}</span>
-      <span className={`shrink-0 w-14 ${levelColors[log.level] ?? 'text-gray-400'}`}>
-        {levelIcons[log.level] ?? '?'} {log.level.padEnd(5)}
+      {/* Timestamp */}
+      <span className="text-klv-text-muted shrink-0 tabular-nums">{formatTime(log.timestamp)}</span>
+
+      {/* Level badge */}
+      <span className={`shrink-0 inline-flex items-center gap-1 w-[58px] ${cfg.color}`}>
+        <span className="text-[10px]">{cfg.icon}</span>
+        <span>{log.level.padEnd(5)}</span>
       </span>
+
+      {/* Pod name (aggregated mode) */}
       {showPodName && log.podName && (
-        <span className="text-purple-400 shrink-0 truncate max-w-[12ch]" title={log.podName}>
+        <span className="text-violet-400/80 shrink-0 truncate max-w-[14ch]" title={log.podName}>
           [{log.podName.slice(-8)}]
         </span>
       )}
-      {log.service && <span className="text-blue-400 shrink-0">({log.service})</span>}
-      <span className={log.level === 'ERROR' || log.level === 'FATAL' ? 'text-red-300' : 'text-gray-200'}>
+
+      {/* Service */}
+      {log.service && (
+        <span className="text-sky-400/70 shrink-0">{log.service}</span>
+      )}
+
+      {/* Message */}
+      <span className={`truncate ${log.level === 'ERROR' || log.level === 'FATAL' ? 'text-red-300' : 'text-klv-text-secondary group-hover:text-klv-text'} transition-colors`}>
         {log.message}
       </span>
     </div>
