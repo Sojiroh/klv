@@ -166,7 +166,7 @@ export default function Stream() {
       {/* Log output */}
       <div className="klv-log-container">
         {logs.map((log, i) => (
-          <LogLine key={i} log={log} showRaw={false} onClick={setSelectedLog} />
+          <LogLine key={i} log={log} showRaw={false} onClick={!streaming || paused ? setSelectedLog : undefined} />
         ))}
         <div ref={logEndRef} />
         {logs.length === 0 && streaming && (

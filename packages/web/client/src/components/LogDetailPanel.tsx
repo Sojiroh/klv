@@ -64,32 +64,30 @@ function Field({ label, value, color }: { label: string; value: string; color?: 
 }
 
 export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null; onClose: () => void }) {
-  const open = log !== null;
-
   useEffect(() => {
-    if (!open) return;
+    if (!log) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, [open, onClose]);
+  }, [log, onClose]);
+
+  if (!log) return null;
 
   return (
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 bg-black/40 z-40 transition-opacity duration-300
-                    ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className="fixed inset-0 bg-black/40 z-40 animate-fade-in"
         onClick={onClose}
       />
 
       {/* Panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-full sm:w-[520px] lg:w-[600px]
+        className="fixed top-0 right-0 h-full w-full sm:w-[520px] lg:w-[600px]
                     bg-klv-surface border-l border-klv-border z-50
-                    transition-transform duration-300 ease-out
-                    ${open ? 'translate-x-0' : 'translate-x-full'}`}
+                    animate-slide-in-right"
       >
         {log && (
           <div className="h-full flex flex-col">
