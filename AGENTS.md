@@ -1,0 +1,152 @@
+# AGENTS.md — kube-log-viewer (klv)
+
+## Project Overview
+
+Monorepo for a Kubernetes JSON log viewer with CLI and Web UI.
+Stack: TypeScript, Node.js, npm workspaces, @kubernetes/client-node.
+
+## Monorepo Structure
+
+```
+packages/
+  core/    — @klv/core   (ESM, "type": "module")  — K8s client wrapper + log parser
+  cli/     — @klv/cli    (ESM, "type": "module")  — Terminal UI with commander
+  web/     — @klv/web    (CommonJS, NestJS)        — REST API + WebSocket gateway
+    client/ — @klv/web-client (ESM, Vite+React 19) — SPA with Tailwind
+```
+
+## Build Commands
+
+```bash
+# Build everything (core must build first — others depend on it)
+npm run build
+
+# Build individual packages
+npm run build:core          # tsc in packages/core
+npm run build:cli           # tsc in packages/cli (depends on core)
+npm run build:web           # Vite client build + nest build
+
+# Development
+npm run dev:web             # NestJS watch mode (packages/web)
+npm run dev:client -w @klv/web  # Vite dev server (packages/web/client, port 5173)
+```
+
+## Tests
+
+No test framework is configured yet. There are no test files, no jest/vitest config,
+and no `test` scripts in any package.json. If adding tests:
+- Prefer vitest for ESM packages (core, cli)
+- Use @nestjs/testing + jest for web package
+- Run a single test: `npx vitest run path/to/file.test.ts` (or jest equivalent)
+
+## Lint / Format
+
+No ESLint or Prettier config exists. TypeScript strict mode is the primary code quality tool.
+All tsconfig.json files use `"strict": true`. Do not add linter config without discussion.
+
+## TypeScript Configuration
+
+| Package | target | module | moduleResolution | Notes |
+|---------|--------|--------|-----------------|-------|
+| core    | ES2022 | Node16 | Node16          | ESM, `composite: true`, emits declarations |
+| cli     | ES2022 | Node16 | Node16          | ESM, emits declarations |
+| web     | ES2022 | commonjs | node           | CJS for NestJS, `emitDecoratorMetadata`, `experimentalDecorators` |
+| client  | ES2022 | ESNext | bundler         | `jsx: react-jsx`, bundled by Vite |
+
+All packages: `strict: true`, `esModuleInterop: true`, `skipLibCheck: true`,
+`forceConsistentCasingInFileNames: true`, `resolveJsonModule: true`.
+
+## Code Style Guidelines
+
+### Imports
+
+- **ESM packages (core, cli):** Use `.js` extension in relative imports: `import { X } from './foo.js'`
+- **Web server (NestJS/CJS):** No extension in relative imports: `import { X } from './foo'`
+- **React client:** No extension in relative imports (Vite handles resolution)
+- Cross-package imports use the workspace name: `import { KubeClient } from '@klv/core'`
+- Use `import type { ... }` for type-only imports; combine with value imports using `type` keyword:
+  `import { KubeClient, type PodInfo } from '@klv/core'`
+- Node built-ins: use bare specifiers (`'fs'`, `'path'`, `'stream'`)
+- Order: external packages first, then internal packages, then relative imports
+
+### Naming Conventions
+
+- **Files:** kebab-case (`kube-client.ts`, `log-parser.ts`, `log.gateway.ts`)
+- **Classes:** PascalCase (`KubeClient`, `LogService`, `LogGateway`)
+- **Interfaces/Types:** PascalCase (`PodInfo`, `LogOptions`, `ParsedLog`, `LogLevel`)
+- **Functions:** camelCase (`parseLogLine`, `matchesFilter`, `formatLog`)
+- **Constants:** UPPER_SNAKE_CASE for module-level config objects (`LEVEL_PRIORITY`, `LEVEL_MAP`, `MAX_LOGS`)
+- **Variables:** camelCase
+- **React components:** PascalCase filenames (`Dashboard.tsx`, `LogLine.tsx`), default export with PascalCase name
+- **Hooks:** `use` prefix, camelCase (`useApi`, `useStream`)
+- **NestJS:** `<feature>.<type>.ts` pattern (`kube.service.ts`, `log.controller.ts`, `log.gateway.ts`)
+
+### Types
+
+- Use explicit interfaces for data shapes (`PodInfo`, `LogOptions`, `ParsedLog`)
+- Use `type` for unions and aliases (`LogLevel = 'TRACE' | 'DEBUG' | ...`)
+- Use `Record<string, unknown>` for dynamic/extra fields, not `any`
+- Use `any` sparingly — only in catch blocks as `err: any` for `.message` access
+- NestJS: use decorators with typed parameters (`@Param('name') name: string`)
+- React: use inline `interface Props` at the top of component files
+- Generic parameters on hooks: `useApi<T>(url)`, `useState<ParsedLog | null>(null)`
+
+### Error Handling
+
+- **Core library:** Throw `Error` with descriptive messages in Spanish
+- **CLI:** Catch in action handlers, show with `spinner.fail()` or `chalk.red()`, `process.exit(1)`
+- **NestJS services:** Let NestJS handle exceptions; use try/catch only for fallback behavior
+  (e.g., `getNamespaces` falls back to kubeconfig namespace on permission error)
+- **React client:** Catch in hooks, store error in state; use `console.error` in event handlers
+- **Empty catch blocks:** Allowed for intentional skip-on-failure patterns (e.g., skipping unreadable pods)
+
+### Formatting
+
+- 2-space indentation
+- Single quotes for strings
+- Trailing commas in multi-line structures
+- Semicolons required
+- Arrow functions with parens: `(x) => x` not `x => x`
+- Template literals for string interpolation: `` `${var}` ``
+- Ternary expressions: multi-line for complex conditions, inline for simple ones
+- No blank line between interface fields
+- One blank line between functions/methods, two blank lines before major sections (CLI commands)
+
+### React Patterns
+
+- Functional components only, with `export default function ComponentName()`
+- Props via inline `interface Props` (not exported unless needed elsewhere)
+- State via `useState`, effects via `useEffect`; no class components
+- Custom hooks return objects: `{ data, loading, error }`
+- Use `useMemo` / `useCallback` for expensive computations and stable references
+- Tailwind CSS for all styling — no CSS modules or styled-components
+- Use the `klv-*` component classes defined in `index.css` (`klv-card`, `klv-btn-primary`, `klv-input`, `klv-select`)
+- Inline conditional classes with template literals, not classnames/clsx library
+- SVG icons inline (no icon library)
+- `useRef` for DOM references (`logEndRef`)
+
+### NestJS Patterns
+
+- One module per feature (`KubeModule`, `LogModule`)
+- Module exports services for cross-module injection (`KubeModule` exports `KubeService`)
+- Controllers are thin — delegate to services
+- WebSocket gateway implements `OnGatewayDisconnect` for cleanup
+- Global prefix `api` set in `main.ts`; controllers define relative paths
+- `ServeStaticModule` serves the Vite build from `client-dist/`
+
+### Tailwind / Design System
+
+- Dark theme with custom `klv-*` color palette defined in `tailwind.config.js`
+- Fonts: Syne (display), Outfit (body), JetBrains Mono (mono)
+- Custom animations: `fade-in`, `slide-up`, `slide-in-right`, `pulse-dot`
+- Noise texture overlay via `.noise-bg` utility class
+- Custom scrollbar styling in `index.css`
+
+## Project Conventions
+
+- UI text and error messages are in Spanish (this is intentional)
+- The CLI uses emoji icons in output (e.g., `📋`, `📦`, `✖`)
+- The project reads the same kubeconfig as OpenLens (~/.kube/config)
+- WebSocket events use `stream:` prefix (`stream:start`, `stream:stop`, `stream:log`, `stream:error`)
+- The web client proxies `/api` and `/socket.io` to localhost:3000 during development
+- Barrel exports from `packages/core/src/index.ts` — always import from `@klv/core`, not deep paths

@@ -1,27 +1,11 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useApi } from '../hooks/useApi';
 import LogLine from '../components/LogLine';
 import LogFilters from '../components/LogFilters';
 import LogDetailPanel from '../components/LogDetailPanel';
-
-interface ParsedLog {
-  raw: string;
-  isJson: boolean;
-  timestamp?: string;
-  level: string;
-  message: string;
-  service?: string;
-  podName?: string;
-  error?: string;
-  stackTrace?: string;
-  extra: Record<string, unknown>;
-}
-
-interface PodInfo {
-  name: string;
-  containers: string[];
-}
+import { type ParsedLog, type Pod } from '../types';
 
 export default function Logs() {
   const { namespace, pod, container: containerParam } = useParams<{
@@ -49,7 +33,7 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   };
 
-  const { data: pods } = useApi<PodInfo[]>(
+  const { data: pods } = useApi<Pick<Pod, 'name' | 'containers'>[]>(
     !isAggregated ? `/api/pods/${namespace}` : null,
   );
   const currentPod = pods?.find((p) => p.name === pod);
@@ -66,6 +50,15 @@ export default function Logs() {
     : `/api/pods/${namespace}/${pod}/logs?${params.toString()}`;
 
   const { data, loading } = useApi<{ logs: ParsedLog[]; total: number; pods?: string[] }>(apiUrl);
+
+  const logCount = data?.logs.length ?? 0;
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: logCount,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => showRaw ? 80 : 28,
+    overscan: 20,
+  });
 
   return (
     <>
@@ -140,13 +133,30 @@ export default function Logs() {
           </div>
         )}
 
-        <div className="klv-log-container">
-          {data?.logs.map((log, i) => (
-            <LogLine key={i} log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
-          ))}
-          {data?.logs.length === 0 && (
+        <div ref={parentRef} className="klv-log-container" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
+          {logCount > 0 ? (
+            <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const log = data!.logs[virtualRow.index];
+                return (
+                  <div
+                    key={virtualRow.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <LogLine log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
+                  </div>
+                );
+              })}
+            </div>
+          ) : data ? (
             <p className="text-klv-text-muted text-center py-8 text-sm">No logs found</p>
-          )}
+          ) : null}
         </div>
       </div>
 

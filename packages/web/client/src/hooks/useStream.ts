@@ -1,26 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
-
-interface ParsedLog {
-  raw: string;
-  isJson: boolean;
-  timestamp?: string;
-  level: string;
-  message: string;
-  service?: string;
-  podName?: string;
-  extra: Record<string, unknown>;
-}
-
-interface StreamOptions {
-  namespace: string;
-  pods: string[];
-  container?: string;
-  filters?: {
-    level?: string;
-    search?: string;
-  };
-}
+import { type ParsedLog, type StreamOptions } from '../types';
 
 const MAX_LOGS = 2000;
 

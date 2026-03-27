@@ -1,23 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useRef, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useApi } from '../hooks/useApi';
 import LogLine from '../components/LogLine';
 import LogDetailPanel from '../components/LogDetailPanel';
-
-interface ParsedLog {
-  raw: string;
-  isJson: boolean;
-  timestamp?: string;
-  level: string;
-  message: string;
-  service?: string;
-  podName?: string;
-  extra: Record<string, unknown>;
-}
-
-interface Pod {
-  name: string;
-  containers: string[];
-}
+import { type ParsedLog, type Pod } from '../types';
 
 export default function Search() {
   const [namespace, setNamespace] = useState('default');
@@ -27,8 +13,9 @@ export default function Search() {
   const [results, setResults] = useState<ParsedLog[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
   const { data: namespaces } = useApi<string[]>('/api/namespaces');
-  const { data: pods } = useApi<Pod[]>(`/api/pods/${namespace}`);
+  const { data: pods } = useApi<Pick<Pod, 'name' | 'containers'>[]>(`/api/pods/${namespace}`);
 
   const containers = useMemo(() => {
     if (!pods) return [];
@@ -58,6 +45,14 @@ export default function Search() {
       setLoading(false);
     }
   };
+
+  const resultCount = results?.length ?? 0;
+  const virtualizer = useVirtualizer({
+    count: resultCount,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 20,
+  });
 
   return (
     <div className="stagger-children">
@@ -154,18 +149,35 @@ export default function Search() {
             </span>
           </div>
 
-          <div className="klv-log-container">
-            {results.map((log, i) => (
-              <div key={i} className="flex gap-2 items-start">
-                {log.podName && (
-                  <span className="text-violet-400/80 font-mono text-xs shrink-0 w-40 truncate px-3 py-[5px]">
-                    {log.podName}
-                  </span>
-                )}
-                <LogLine log={log} showRaw={false} onClick={setSelectedLog} />
+          <div ref={parentRef} className="klv-log-container" style={{ maxHeight: 'calc(100vh - 340px)', overflow: 'auto' }}>
+            {resultCount > 0 ? (
+              <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const log = results![virtualRow.index];
+                  return (
+                    <div
+                      key={virtualRow.index}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <div className="flex gap-2 items-start">
+                        {log.podName && (
+                          <span className="text-violet-400/80 font-mono text-xs shrink-0 w-40 truncate px-3 py-[5px]">
+                            {log.podName}
+                          </span>
+                        )}
+                        <LogLine log={log} showRaw={false} onClick={setSelectedLog} />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-            {results.length === 0 && (
+            ) : (
               <p className="text-klv-text-muted text-center py-8 text-sm">No results found</p>
             )}
           </div>

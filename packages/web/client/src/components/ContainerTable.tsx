@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { statusStyles } from '../utils/log-utils';
 
 export interface ContainerGroup {
   container: string;
@@ -7,14 +8,6 @@ export interface ContainerGroup {
   statuses: string[];
   pods: { name: string; status: string; age: string }[];
 }
-
-const statusStyles: Record<string, { dot: string; text: string }> = {
-  Running: { dot: 'bg-emerald-400', text: 'text-emerald-400' },
-  Pending: { dot: 'bg-amber-400', text: 'text-amber-400' },
-  Succeeded: { dot: 'bg-sky-400', text: 'text-sky-400' },
-  Failed: { dot: 'bg-red-400', text: 'text-red-400' },
-  Unknown: { dot: 'bg-zinc-500', text: 'text-zinc-500' },
-};
 
 function StatusBadge({ status }: { status: string }) {
   const s = statusStyles[status] ?? statusStyles.Unknown;

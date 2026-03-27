@@ -14,7 +14,9 @@ export class LogService {
     since?: number;
     level?: string;
     search?: string;
-  }): Promise<{ logs: ParsedLog[]; total: number }> {
+    limit?: number;
+    offset?: number;
+  }): Promise<{ logs: ParsedLog[]; total: number; offset: number; limit: number }> {
     const raw = await this.kubeService.getLogs({
       namespace: options.namespace,
       podName: options.pod,
@@ -32,8 +34,16 @@ export class LogService {
     if (options.search) filter.search = options.search;
 
     const filtered = parsed.filter((log) => matchesFilter(log, filter));
+    const start = options.offset ?? 0;
+    const paginated =
+      options.limit != null ? filtered.slice(start, start + options.limit) : filtered.slice(start);
 
-    return { logs: filtered, total: parsed.length };
+    return {
+      logs: paginated,
+      total: filtered.length,
+      offset: start,
+      limit: options.limit ?? filtered.length,
+    };
   }
 
   async getAggregatedLogs(options: {
@@ -43,14 +53,16 @@ export class LogService {
     since?: number;
     level?: string;
     search?: string;
-  }): Promise<{ logs: ParsedLog[]; total: number; pods: string[] }> {
+    limit?: number;
+    offset?: number;
+  }): Promise<{ logs: ParsedLog[]; total: number; offset: number; limit: number; pods: string[] }> {
     const allPods = await this.kubeService.getPods(options.namespace);
     const matchingPods = allPods.filter((p) =>
       p.containers.includes(options.container),
     );
 
     if (matchingPods.length === 0) {
-      return { logs: [], total: 0, pods: [] };
+      return { logs: [], total: 0, offset: 0, limit: 0, pods: [] };
     }
 
     const tailPerPod = options.tail ?? 100;
@@ -83,10 +95,15 @@ export class LogService {
     if (options.search) filter.search = options.search;
 
     const filtered = allParsed.filter((log) => matchesFilter(log, filter));
+    const start = options.offset ?? 0;
+    const paginated =
+      options.limit != null ? filtered.slice(start, start + options.limit) : filtered.slice(start);
 
     return {
-      logs: filtered,
-      total: allParsed.length,
+      logs: paginated,
+      total: filtered.length,
+      offset: start,
+      limit: options.limit ?? filtered.length,
       pods: matchingPods.map((p) => p.name),
     };
   }

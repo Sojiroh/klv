@@ -2,18 +2,11 @@ import { useState } from 'react';
 import { useApi } from '../hooks/useApi';
 import ContextSelector from '../components/ContextSelector';
 import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
+import { type Pod } from '../types';
 
 interface ContextsResponse {
   contexts: string[];
   current: string;
-}
-
-interface Pod {
-  name: string;
-  namespace: string;
-  status: string;
-  containers: string[];
-  age: string;
 }
 
 export default function Dashboard() {

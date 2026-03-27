@@ -1,4 +1,5 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import ErrorBoundary from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import Logs from './pages/Logs';
 import Stream from './pages/Stream';
@@ -59,13 +60,15 @@ export default function App() {
 
       {/* Main content */}
       <main className="px-6 py-6 max-w-[1440px] mx-auto animate-fade-in">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/logs/:namespace/container/:container" element={<Logs />} />
-          <Route path="/logs/:namespace/:pod" element={<Logs />} />
-          <Route path="/stream" element={<Stream />} />
-          <Route path="/search" element={<Search />} />
-        </Routes>
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/logs/:namespace/container/:container" element={<Logs />} />
+            <Route path="/logs/:namespace/:pod" element={<Logs />} />
+            <Route path="/stream" element={<Stream />} />
+            <Route path="/search" element={<Search />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

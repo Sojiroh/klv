@@ -1,29 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useApi } from '../hooks/useApi';
 import { useStream } from '../hooks/useStream';
 import LogLine from '../components/LogLine';
 import LogDetailPanel from '../components/LogDetailPanel';
-
-interface ParsedLog {
-  raw: string;
-  isJson: boolean;
-  timestamp?: string;
-  level: string;
-  message: string;
-  service?: string;
-  podName?: string;
-  error?: string;
-  stackTrace?: string;
-  extra: Record<string, unknown>;
-}
-
-interface Pod {
-  name: string;
-  namespace: string;
-  status: string;
-  containers: string[];
-  age: string;
-}
+import { type ParsedLog, type Pod } from '../types';
 
 export default function Stream() {
   const [namespace, setNamespace] = useState('default');
@@ -31,17 +12,24 @@ export default function Stream() {
   const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
 
   const { data: namespaces } = useApi<string[]>('/api/namespaces');
   const { data: pods } = useApi<Pod[]>(`/api/pods/${namespace}`);
   const { logs, connected, streaming, start, stop, clear } = useStream();
 
+  const virtualizer = useVirtualizer({
+    count: logs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28,
+    overscan: 20,
+  });
+
   useEffect(() => {
-    if (autoScroll && !paused) {
-      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (autoScroll && !paused && logs.length > 0) {
+      virtualizer.scrollToIndex(logs.length - 1, { align: 'end' });
     }
-  }, [logs, autoScroll, paused]);
+  }, [logs.length, autoScroll, paused]);
 
   const containers = useMemo(() => {
     if (!pods) return [];
@@ -164,17 +152,33 @@ export default function Stream() {
       )}
 
       {/* Log output */}
-      <div className="klv-log-container">
-        {logs.map((log, i) => (
-          <LogLine key={i} log={log} showRaw={false} onClick={!streaming || paused ? setSelectedLog : undefined} />
-        ))}
-        <div ref={logEndRef} />
-        {logs.length === 0 && streaming && (
+      <div ref={parentRef} className="klv-log-container" style={{ maxHeight: 'calc(100vh - 280px)', overflow: 'auto' }}>
+        {logs.length > 0 ? (
+          <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const log = logs[virtualRow.index];
+              return (
+                <div
+                  key={virtualRow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <LogLine log={log} showRaw={false} onClick={(log) => { setSelectedLog(log); if (streaming && !paused) setPaused(true); }} />
+                </div>
+              );
+            })}
+          </div>
+        ) : streaming ? (
           <div className="text-center py-12">
             <span className="inline-block w-2 h-2 rounded-full bg-klv-accent animate-pulse-dot mr-2" />
             <span className="text-klv-text-muted text-sm">Waiting for logs...</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />

@@ -1,58 +1,6 @@
 import { useEffect } from 'react';
-
-interface ParsedLog {
-  raw: string;
-  isJson: boolean;
-  timestamp?: string;
-  level: string;
-  message: string;
-  service?: string;
-  podName?: string;
-  error?: string;
-  stackTrace?: string;
-  extra: Record<string, unknown>;
-}
-
-const levelColors: Record<string, string> = {
-  TRACE: 'text-zinc-500',
-  DEBUG: 'text-sky-400',
-  INFO: 'text-emerald-400',
-  WARN: 'text-amber-400',
-  ERROR: 'text-red-400',
-  FATAL: 'text-red-500',
-  UNKNOWN: 'text-zinc-400',
-};
-
-const levelBg: Record<string, string> = {
-  TRACE: 'bg-zinc-500/10',
-  DEBUG: 'bg-sky-400/10',
-  INFO: 'bg-emerald-400/10',
-  WARN: 'bg-amber-400/10',
-  ERROR: 'bg-red-400/10',
-  FATAL: 'bg-red-500/15',
-  UNKNOWN: 'bg-zinc-400/10',
-};
-
-function prettyRaw(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    const match = raw.match(/^\S+\s+([\[{].*)$/s);
-    if (match) {
-      try { return JSON.stringify(JSON.parse(match[1]), null, 2); } catch { /* fall through */ }
-    }
-    return raw;
-  }
-}
-
-function formatTimestamp(ts?: string): string {
-  if (!ts) return '--';
-  try {
-    return new Date(ts).toLocaleString('en-US', { hour12: false });
-  } catch {
-    return ts;
-  }
-}
+import { type ParsedLog } from '../types';
+import { formatTimestamp, levelBg, levelColors, prettyRaw } from '../utils/log-utils';
 
 function Field({ label, value, color }: { label: string; value: string; color?: string }) {
   return (

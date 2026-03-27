@@ -1,5 +1,5 @@
 import * as k8s from '@kubernetes/client-node';
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { PassThrough } from 'stream';
@@ -33,6 +33,10 @@ export class KubeClient {
     this.kc = new k8s.KubeConfig();
     this.kubeconfigPath = kubeconfig ?? join(homedir(), '.kube', 'config');
 
+    if (!existsSync(this.kubeconfigPath)) {
+      throw new Error(`No se encontró el archivo kubeconfig en: ${this.kubeconfigPath}`);
+    }
+
     if (kubeconfig) {
       this.kc.loadFromFile(kubeconfig);
     } else {
@@ -61,9 +65,13 @@ export class KubeClient {
       throw new Error(`Contexto "${contextName}" no existe. Disponibles: ${contexts.join(', ')}`);
     }
 
-    const content = readFileSync(this.kubeconfigPath, 'utf-8');
-    const updated = content.replace(/^current-context:.*$/m, `current-context: ${contextName}`);
-    writeFileSync(this.kubeconfigPath, updated, 'utf-8');
+    try {
+      const content = readFileSync(this.kubeconfigPath, 'utf-8');
+      const updated = content.replace(/^current-context:.*$/m, `current-context: ${contextName}`);
+      writeFileSync(this.kubeconfigPath, updated, 'utf-8');
+    } catch (err) {
+      throw new Error(`Error al modificar kubeconfig: ${(err as Error).message}`);
+    }
   }
 
   async getNamespaces(): Promise<string[]> {
@@ -78,47 +86,63 @@ export class KubeClient {
   }
 
   async getPods(namespace: string, labelSelector?: string): Promise<PodInfo[]> {
-    const res = await this.coreApi.listNamespacedPod({ namespace, labelSelector });
-    return (res.items ?? []).map((pod) => ({
-      name: pod.metadata?.name ?? '',
-      namespace: pod.metadata?.namespace ?? namespace,
-      status: pod.status?.phase ?? 'Unknown',
-      containers: (pod.spec?.containers ?? []).map((c) => c.name),
-      labels: pod.metadata?.labels ?? {},
-      age: this.getAge(pod.metadata?.creationTimestamp),
-    }));
+    try {
+      const res = await this.coreApi.listNamespacedPod({ namespace, labelSelector });
+      return (res.items ?? []).map((pod) => ({
+        name: pod.metadata?.name ?? '',
+        namespace: pod.metadata?.namespace ?? namespace,
+        status: pod.status?.phase ?? 'Unknown',
+        containers: (pod.spec?.containers ?? []).map((c) => c.name),
+        labels: pod.metadata?.labels ?? {},
+        age: this.getAge(pod.metadata?.creationTimestamp),
+      }));
+    } catch (err) {
+      throw new Error(`Error al obtener pods del namespace "${namespace}": ${(err as Error).message}`);
+    }
   }
 
   async getDeployments(namespace: string): Promise<string[]> {
-    const res = await this.appsApi.listNamespacedDeployment({ namespace });
-    return (res.items ?? []).map((d) => d.metadata?.name ?? '').filter(Boolean);
+    try {
+      const res = await this.appsApi.listNamespacedDeployment({ namespace });
+      return (res.items ?? []).map((d) => d.metadata?.name ?? '').filter(Boolean);
+    } catch (err) {
+      throw new Error(`Error al obtener deployments del namespace "${namespace}": ${(err as Error).message}`);
+    }
   }
 
   async getPodsForDeployment(namespace: string, deploymentName: string): Promise<PodInfo[]> {
-    const deployment = await this.appsApi.readNamespacedDeployment({
-      name: deploymentName,
-      namespace,
-    });
-    const matchLabels = deployment.spec?.selector?.matchLabels;
-    if (!matchLabels) return [];
+    try {
+      const deployment = await this.appsApi.readNamespacedDeployment({
+        name: deploymentName,
+        namespace,
+      });
+      const matchLabels = deployment.spec?.selector?.matchLabels;
+      if (!matchLabels) return [];
 
-    const selector = Object.entries(matchLabels)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(',');
+      const selector = Object.entries(matchLabels)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(',');
 
-    return this.getPods(namespace, selector);
+      return this.getPods(namespace, selector);
+    } catch (err) {
+      throw new Error(`Error al obtener pods del deployment "${deploymentName}": ${(err as Error).message}`);
+    }
   }
 
   async getLogs(options: LogOptions): Promise<string> {
-    const res = await this.coreApi.readNamespacedPodLog({
-      name: options.podName,
-      namespace: options.namespace,
-      container: options.container,
-      tailLines: options.tailLines ?? 100,
-      sinceSeconds: options.sinceSeconds,
-      timestamps: options.timestamps,
-    });
-    return typeof res === 'string' ? res : String(res);
+    try {
+      const res = await this.coreApi.readNamespacedPodLog({
+        name: options.podName,
+        namespace: options.namespace,
+        container: options.container,
+        tailLines: options.tailLines ?? 100,
+        sinceSeconds: options.sinceSeconds,
+        timestamps: options.timestamps,
+      });
+      return typeof res === 'string' ? res : String(res);
+    } catch (err) {
+      throw new Error(`Error al obtener logs del pod "${options.podName}": ${(err as Error).message}`);
+    }
   }
 
   async streamLogs(
