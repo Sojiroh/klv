@@ -2,17 +2,18 @@
 
 ## Project Overview
 
-Monorepo for a Kubernetes JSON log viewer with CLI and Web UI.
-Stack: TypeScript, Node.js, npm workspaces, @kubernetes/client-node.
+Monorepo for a Kubernetes JSON log viewer with CLI, Web UI, and Desktop app.
+Stack: TypeScript, Node.js, Rust, npm workspaces, @kubernetes/client-node, Tauri 2.
 
 ## Monorepo Structure
 
 ```
 packages/
-  core/    — @klv/core   (ESM, "type": "module")  — K8s client wrapper + log parser
-  cli/     — @klv/cli    (ESM, "type": "module")  — Terminal UI with commander
-  web/     — @klv/web    (CommonJS, NestJS)        — REST API + WebSocket gateway
-    client/ — @klv/web-client (ESM, Vite+React 19) — SPA with Tailwind
+  core/      — @klv/core        (ESM, "type": "module")  — K8s client wrapper + log parser
+  cli/       — @klv/cli         (ESM, "type": "module")  — Terminal UI with commander
+  web/       — @klv/web         (CommonJS, NestJS)        — REST API + WebSocket gateway
+    client/  — @klv/web-client  (ESM, Vite+React 19)     — SPA with Tailwind
+  desktop/   — @klv/desktop     (ESM, Tauri 2 + Rust)    — Native desktop app
 ```
 
 ## Build Commands
@@ -25,10 +26,12 @@ npm run build
 npm run build:core          # tsc in packages/core
 npm run build:cli           # tsc in packages/cli (depends on core)
 npm run build:web           # Vite client build + nest build
+npm run build:desktop       # Tauri build (generates native installers)
 
 # Development
 npm run dev:web             # NestJS watch mode (packages/web)
 npm run dev:client -w @klv/web  # Vite dev server (packages/web/client, port 5173)
+npm run dev:desktop         # Tauri dev mode (Vite + native window)
 ```
 
 ## Tests
@@ -141,6 +144,24 @@ All packages: `strict: true`, `esModuleInterop: true`, `skipLibCheck: true`,
 - Custom animations: `fade-in`, `slide-up`, `slide-in-right`, `pulse-dot`
 - Noise texture overlay via `.noise-bg` utility class
 - Custom scrollbar styling in `index.css`
+
+## CI/CD (GitHub Actions)
+
+Desktop builds run automatically via `.github/workflows/build-desktop.yml` using `tauri-apps/tauri-action@v1`.
+
+**Triggers:** push to `main`, tags `v*`, PRs to `main`, manual (`workflow_dispatch`)
+
+| Job | Runner | Artifacts |
+|-----|--------|-----------|
+| macOS (ARM)  | `macos-latest`  | `.dmg` (Apple Silicon) |
+| macOS (Intel) | `macos-latest` | `.dmg` (x86_64) |
+| Windows      | `windows-latest` | `.msi`, `.exe` (NSIS) |
+| Linux        | `ubuntu-22.04`  | `.deb`, `.rpm`, `.AppImage` |
+
+- Tags `v*` create a **draft GitHub Release** with binaries attached
+- Rust and npm caches are enabled to speed up builds
+- `tauri.conf.json` uses `"targets": "all"` — generates native format per platform automatically
+- The desktop package at `packages/desktop` uses `projectPath` in the action since it's a monorepo
 
 ## Project Conventions
 

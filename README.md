@@ -6,10 +6,11 @@ Monorepo con CLI y Web UI para ver logs JSON de Kubernetes. Lee tu kubeconfig ex
 
 ```
 packages/
-  core/     @klv/core  — Shared: kube-client + log-parser
-  cli/      @klv/cli   — CLI interactivo con colores y filtros
-  web/      @klv/web   — NestJS API + React frontend
-    client/            — React 19 + Vite + Tailwind SPA
+  core/     @klv/core      — Shared: kube-client + log-parser
+  cli/      @klv/cli       — CLI interactivo con colores y filtros
+  web/      @klv/web       — NestJS API + React frontend
+    client/                — React 19 + Vite + Tailwind SPA
+  desktop/  @klv/desktop   — App de escritorio con Tauri 2 (Rust + React)
 ```
 
 ## Stack
@@ -17,7 +18,8 @@ packages/
 - **Core**: TypeScript, @kubernetes/client-node
 - **CLI**: Commander, chalk, ora, cli-table3
 - **Backend**: NestJS, Socket.IO (WebSocket gateway)
-- **Frontend**: React 19, Vite, Tailwind CSS, React Router, socket.io-client
+- **Frontend**: React 19, Vite, Tailwind CSS, React Router, socket.io-client, @tanstack/react-virtual
+- **Desktop**: Tauri 2, Rust, kube-rs, tokio
 
 ## Instalacion
 
@@ -43,8 +45,8 @@ npm run dev:client -w @klv/web
 
 ### Paginas
 
-- **Dashboard** — Selector de contexto/namespace, tabla de pods con status y link a logs
-- **Logs** — Visor de logs con filtros por nivel y busqueda, toggle raw JSON
+- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status y link a logs agregados
+- **Logs** — Visor de logs con filtros por nivel y busqueda, toggle raw JSON, panel de detalle, soporte para logs por pod y por container (agregados multi-pod)
 - **Stream** — Streaming en tiempo real via WebSocket, seleccion de pods, auto-scroll, pause/resume
 - **Search** — Busqueda full-text en todos los pods de un namespace
 
@@ -57,7 +59,8 @@ npm run dev:client -w @klv/web
 | `GET /api/namespaces` | Listar namespaces |
 | `GET /api/pods/:namespace` | Listar pods |
 | `GET /api/deployments/:namespace` | Listar deployments |
-| `GET /api/pods/:ns/:pod/logs` | Logs parseados (query: `level`, `search`, `tail`, `since`, `container`) |
+| `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`) |
+| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container (query: `level`, `search`, `tail`, `since`, `limit`, `offset`) |
 
 ### WebSocket
 
@@ -67,6 +70,38 @@ Eventos Socket.IO para streaming en tiempo real:
 - `stream:stop` — Detener stream
 - `stream:log` — Log parseado (servidor -> cliente)
 - `stream:error` — Error de stream (servidor -> cliente)
+
+## Desktop (Tauri)
+
+App de escritorio nativa que reutiliza el frontend de React pero reemplaza NestJS por un backend en Rust via Tauri 2.
+
+```bash
+# Desarrollo (inicia Vite + ventana nativa)
+npm run dev:desktop
+
+# Build para produccion (genera .deb / .rpm)
+npm run build:desktop
+```
+
+### Arquitectura
+
+- **Frontend**: Mismo React SPA que la web, con una capa adaptadora (`tauri.ts`) que detecta si corre en Tauri (`window.__TAURI_INTERNALS__`) y redirige las llamadas API al backend Rust via `invoke()`
+- **Backend**: Comandos Tauri en Rust que usan `kube-rs` directamente, con streaming via eventos Tauri
+- **Log parser**: Reimplementado en Rust (`log_parser.rs`, `log_filter.rs`) con la misma logica que el parser de TypeScript
+
+### Comandos Tauri
+
+| Comando | Descripcion |
+|---------|-------------|
+| `get_contexts` | Contextos disponibles y actual |
+| `set_context` | Cambiar contexto activo |
+| `get_namespaces` | Listar namespaces |
+| `get_pods` | Listar pods de un namespace |
+| `get_deployments` | Listar deployments |
+| `get_pod_logs` | Logs parseados de un pod |
+| `get_container_logs` | Logs agregados por container |
+| `stream_start` | Iniciar stream en tiempo real |
+| `stream_stop` | Detener stream |
 
 ## CLI
 
@@ -179,7 +214,9 @@ Compatible con Spring Boot, NestJS, Go (zap/zerolog), Python (structlog), y cual
 | `npm run build:core` | Build solo @klv/core |
 | `npm run build:cli` | Build solo @klv/cli |
 | `npm run build:web` | Build @klv/web (client + NestJS) |
+| `npm run build:desktop` | Build app de escritorio Tauri (.deb/.rpm) |
 | `npm run dev:web` | NestJS en watch mode |
+| `npm run dev:desktop` | Tauri dev (Vite + ventana nativa) |
 
 ## Desarrollo
 
@@ -193,6 +230,9 @@ npm run dev:web
 # Desarrollo web (frontend con HMR)
 cd packages/web/client && npm run dev
 
+# Desarrollo desktop (Tauri + frontend)
+npm run dev:desktop
+
 # Correr CLI sin compilar
 npm run dev -w @klv/cli -- -n mi-namespace logs
 ```
@@ -203,3 +243,4 @@ npm run dev -w @klv/cli -- -n mi-namespace logs
 - Usa `--exclude "healthcheck,readiness"` para filtrar el ruido de probes
 - El comando `search` es util para encontrar errores que no sabes en que pod estan
 - La Web UI usa el mismo backend que el CLI, asi que los datos son identicos
+- La app de escritorio (Tauri) no necesita el servidor NestJS — conecta directo al cluster via kube-rs
