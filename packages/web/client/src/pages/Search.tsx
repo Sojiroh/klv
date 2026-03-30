@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import LogLine from '../components/LogLine';
 import LogDetailPanel from '../components/LogDetailPanel';
 import { type ParsedLog, type Pod } from '../types';
+import { isTauri, invokeApi } from '../lib/tauri';
 
 export default function Search() {
   const [namespace, setNamespace] = useState('default');
@@ -26,16 +27,27 @@ export default function Search() {
     if (!term.trim()) return;
     setLoading(true);
     try {
-      const podsRes = await fetch(`/api/pods/${namespace}`);
-      const pods: { name: string }[] = await podsRes.json();
+      let podList: { name: string }[];
+      if (isTauri()) {
+        podList = await invokeApi<{ name: string }[]>(`/api/pods/${namespace}`);
+      } else {
+        const podsRes = await fetch(`/api/pods/${namespace}`);
+        podList = await podsRes.json();
+      }
 
       const allLogs: ParsedLog[] = [];
-      for (const pod of pods) {
+      for (const pod of podList) {
         const params = new URLSearchParams({ search: term });
         if (level) params.set('level', level);
         if (container) params.set('container', container);
-        const res = await fetch(`/api/pods/${namespace}/${pod.name}/logs?${params}`);
-        const data: { logs: ParsedLog[] } = await res.json();
+        const url = `/api/pods/${namespace}/${pod.name}/logs?${params}`;
+        let data: { logs: ParsedLog[] };
+        if (isTauri()) {
+          data = await invokeApi<{ logs: ParsedLog[] }>(url);
+        } else {
+          const res = await fetch(url);
+          data = await res.json();
+        }
         allLogs.push(...data.logs);
       }
       setResults(allLogs);

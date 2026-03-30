@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi';
 import ContextSelector from '../components/ContextSelector';
 import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
 import { type Pod } from '../types';
+import { isTauri, invokeApi } from '../lib/tauri';
 
 interface ContextsResponse {
   contexts: string[];
@@ -28,7 +29,11 @@ export default function Dashboard() {
   );
 
   const handleContextSwitch = async (name: string) => {
-    await fetch(`/api/contexts/${name}`, { method: 'PUT' });
+    if (isTauri()) {
+      await invokeApi(`/api/contexts/${name}`, { method: 'PUT' });
+    } else {
+      await fetch(`/api/contexts/${name}`, { method: 'PUT' });
+    }
     window.location.reload();
   };
 

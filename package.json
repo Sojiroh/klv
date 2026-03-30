@@ -10,6 +10,8 @@
     "build:core": "npm run build -w @klv/core",
     "build:cli": "npm run build -w @klv/cli",
     "build:web": "npm run build -w @klv/web",
-    "dev:web": "npm run dev -w @klv/web"
+    "dev:web": "npm run dev -w @klv/web",
+    "dev:desktop": "npm run dev -w @klv/desktop",
+    "build:desktop": "npm run build -w @klv/desktop"
   }
 }

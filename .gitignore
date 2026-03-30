@@ -5,3 +5,4 @@ client-dist/
 *.tsbuildinfo
 .env
 /.idea/
+packages/desktop/src-tauri/target/

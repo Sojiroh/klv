@@ -44,6 +44,8 @@ export default function Stream() {
       namespace,
       pods: pods.map((p) => p.name),
       container: selectedContainer,
+    }).catch((err: unknown) => {
+      console.error('Stream start failed:', err);
     });
   };
 
