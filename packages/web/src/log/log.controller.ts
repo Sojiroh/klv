@@ -1,17 +1,34 @@
 import { Controller, Get, Param, Query, BadRequestException } from '@nestjs/common';
+import { parseLevel, type LogLevel } from '@klv/core';
 import { LogService } from './log.service';
 
-const VALID_LEVELS = new Set(['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL']);
 const MAX_TAIL = 10000;
 const MAX_LIMIT = 10000;
 
-function parsePositiveInt(value: string | undefined, name: string, max?: number): number | undefined {
-  if (value == null) return undefined;
-  const n = parseInt(value, 10);
-  if (isNaN(n) || n < 0) {
-    throw new BadRequestException(`${name} debe ser un número entero positivo`);
+function parseUint(value: unknown, name: string, { min = 0, max }: { min?: number; max?: number } = {}) {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new BadRequestException(`${name} debe ser un número entero no negativo`);
+  }
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)) {
+    throw new BadRequestException(`${name} es demasiado grande`);
+  }
+  if (n < min) {
+    throw new BadRequestException(`${name} debe ser un número entero mayor o igual a ${min}`);
   }
   return max != null ? Math.min(n, max) : n;
+}
+
+function parseMinLevel(value: unknown): LogLevel | undefined {
+  if (value === undefined) return undefined;
+  const level = typeof value === 'string' ? parseLevel(value) : 'UNKNOWN';
+  if (level === 'UNKNOWN') {
+    throw new BadRequestException(
+      `Nivel inválido: ${String(value)}. Válidos: TRACE, DEBUG, INFO, WARN, ERROR, FATAL`,
+    );
+  }
+  return level;
 }
 
 @Controller()
@@ -29,19 +46,15 @@ export class LogController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    if (level && !VALID_LEVELS.has(level.toUpperCase())) {
-      throw new BadRequestException(`Nivel inválido: ${level}. Válidos: ${[...VALID_LEVELS].join(', ')}`);
-    }
-
     return this.logService.getAggregatedLogs({
       namespace,
       container,
-      tail: parsePositiveInt(tail, 'tail', MAX_TAIL),
-      since: parsePositiveInt(since, 'since'),
-      level,
+      tail: parseUint(tail, 'tail', { max: MAX_TAIL }),
+      since: parseUint(since, 'since', { min: 1 }),
+      level: parseMinLevel(level),
       search,
-      limit: parsePositiveInt(limit, 'limit', MAX_LIMIT),
-      offset: parsePositiveInt(offset, 'offset'),
+      limit: parseUint(limit, 'limit', { max: MAX_LIMIT }),
+      offset: parseUint(offset, 'offset'),
     });
   }
 
@@ -57,20 +70,16 @@ export class LogController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    if (level && !VALID_LEVELS.has(level.toUpperCase())) {
-      throw new BadRequestException(`Nivel inválido: ${level}. Válidos: ${[...VALID_LEVELS].join(', ')}`);
-    }
-
     return this.logService.getParsedLogs({
       namespace,
       pod,
       container,
-      tail: parsePositiveInt(tail, 'tail', MAX_TAIL),
-      since: parsePositiveInt(since, 'since'),
-      level,
+      tail: parseUint(tail, 'tail', { max: MAX_TAIL }),
+      since: parseUint(since, 'since', { min: 1 }),
+      level: parseMinLevel(level),
       search,
-      limit: parsePositiveInt(limit, 'limit', MAX_LIMIT),
-      offset: parsePositiveInt(offset, 'offset'),
+      limit: parseUint(limit, 'limit', { max: MAX_LIMIT }),
+      offset: parseUint(offset, 'offset'),
     });
   }
 }

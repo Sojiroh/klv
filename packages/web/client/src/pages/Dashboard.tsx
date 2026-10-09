@@ -1,20 +1,19 @@
 import { useState } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useNamespaces } from '../hooks/useNamespaces';
 import ContextSelector from '../components/ContextSelector';
 import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
-import { type Pod } from '../types';
-import { isTauri, invokeApi } from '../lib/tauri';
-
-interface ContextsResponse {
-  contexts: string[];
-  current: string;
-}
+import ErrorNotice from '../components/ErrorNotice';
+import { type ContextsResponse, type Pod } from '../types';
+import { apiRequest, errorMessage } from '../lib/api';
 
 export default function Dashboard() {
-  const [namespace, setNamespace] = useState('default');
-  const { data: ctxData } = useApi<ContextsResponse>('/api/contexts');
-  const { data: namespaces } = useApi<string[]>('/api/namespaces');
-  const { data: pods, loading } = useApi<Pod[]>(`/api/pods/${namespace}`);
+  const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const { data: ctxData, error: ctxError } = useApi<ContextsResponse>('/api/contexts');
+  const { data: pods, loading, error: podsError } = useApi<Pod[]>(
+    namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
+  );
 
   const groups = Object.values(
     (pods ?? []).reduce<Record<string, ContainerGroup>>((acc, pod) => {
@@ -29,17 +28,21 @@ export default function Dashboard() {
   );
 
   const handleContextSwitch = async (name: string) => {
-    if (isTauri()) {
-      await invokeApi(`/api/contexts/${name}`, { method: 'PUT' });
-    } else {
-      await fetch(`/api/contexts/${name}`, { method: 'PUT' });
+    setSwitchError(null);
+    try {
+      await apiRequest(`/api/contexts/${encodeURIComponent(name)}`, { method: 'PUT' });
+    } catch (err) {
+      setSwitchError(errorMessage(err));
+      return;
     }
     window.location.reload();
   };
 
+  const error = switchError ?? ctxError ?? namespacesError ?? podsError;
+
   return (
     <div className="stagger-children">
-      {ctxData && namespaces && (
+      {ctxData && (
         <ContextSelector
           contexts={ctxData.contexts}
           current={ctxData.current}
@@ -50,13 +53,17 @@ export default function Dashboard() {
         />
       )}
 
+      {error && <ErrorNotice message={error} />}
+
       <div className="flex items-baseline gap-3 mb-5">
         <h2 className="text-xl font-display font-bold tracking-tight">
           Containers
         </h2>
-        <span className="text-sm text-klv-text-muted">
-          in <span className="text-klv-accent font-mono">{namespace}</span>
-        </span>
+        {namespace && (
+          <span className="text-sm text-klv-text-muted">
+            in <span className="text-klv-accent font-mono">{namespace}</span>
+          </span>
+        )}
       </div>
 
       {loading && (
@@ -65,7 +72,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {groups.length > 0 && <ContainerTable groups={groups} namespace={namespace} />}
+      {pods && namespace && <ContainerTable groups={groups} namespace={namespace} />}
     </div>
   );
 }

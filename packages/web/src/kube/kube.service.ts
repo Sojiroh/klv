@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { KubeClient, type PodInfo, type LogOptions } from '@klv/core';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { KubeClient, type LogOptions } from '@klv/core';
 
 @Injectable()
 export class KubeService {
@@ -17,9 +17,11 @@ export class KubeService {
   }
 
   useContext(name: string) {
-    this.client.useContext(name);
-    // Recreate client with new context
-    this.client = new KubeClient();
+    if (!this.client.getContexts().includes(name)) {
+      throw new NotFoundException(`Contexto "${name}" no existe`);
+    }
+    // Solo cambia el cliente en memoria; no modifica el kubeconfig
+    this.client = new KubeClient(undefined, name);
     return { current: this.client.getCurrentContext() };
   }
 

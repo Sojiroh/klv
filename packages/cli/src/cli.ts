@@ -1,14 +1,32 @@
 #!/usr/bin/env node
 
+import { createRequire } from 'module';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
-import { KubeClient, parseLogLine, matchesFilter, type LogFilter, type LogLevel, type ParsedLog } from '@klv/core';
+import { KubeClient, parseLogLine, parseLevel, matchesFilter, type LogFilter, type LogLevel, type ParsedLog } from '@klv/core';
 import { formatLog, formatLogSeparator, formatStats, type FormatOptions } from './ui/formatter.js';
 import { select, multiSelect } from './ui/prompts.js';
 
-const VERSION = '0.1.0';
+// dist/cli.js y src/cli.ts viven un nivel por debajo de package.json
+const { version: VERSION } = createRequire(import.meta.url)('../package.json') as { version: string };
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+const VALID_LEVELS = 'TRACE, DEBUG, INFO, WARN, ERROR, FATAL';
+
+// Normaliza --level con el parser del core; un valor desconocido es un error (no desactiva el filtro)
+function parseMinLevel(raw: string | undefined): LogLevel | undefined {
+  if (raw === undefined) return undefined;
+  const level = parseLevel(raw);
+  if (level === 'UNKNOWN') {
+    throw new Error(`Nivel inválido: "${raw}". Niveles válidos: ${VALID_LEVELS}`);
+  }
+  return level;
+}
 
 const program = new Command();
 
@@ -16,7 +34,7 @@ program
   .name('klv')
   .description('Kubernetes Log Viewer — Logs JSON bonitos en tu terminal')
   .version(VERSION)
-  .option('--kubeconfig <path>', 'Ruta al kubeconfig', process.env.KUBECONFIG)
+  .option('--kubeconfig <path>', 'Ruta al kubeconfig (por defecto: $KUBECONFIG o ~/.kube/config)')
   .option('--context <name>', 'Contexto de Kubernetes a usar')
   .option('-n, --namespace <ns>', 'Namespace', 'default');
 
@@ -27,17 +45,23 @@ program
   .description('Listar contextos disponibles del kubeconfig')
   .action(() => {
     const opts = program.opts();
-    const client = new KubeClient(opts.kubeconfig, opts.context);
-    const contexts = client.getContexts();
-    const current = client.getCurrentContext();
 
-    console.log(chalk.bold('\n📋 Contextos disponibles:\n'));
-    contexts.forEach((ctx) => {
-      const marker = ctx === current ? chalk.green(' ● ') : chalk.gray(' ○ ');
-      const name = ctx === current ? chalk.greenBright(ctx) : chalk.white(ctx);
-      console.log(`${marker}${name}`);
-    });
-    console.log();
+    try {
+      const client = new KubeClient(opts.kubeconfig, opts.context);
+      const contexts = client.getContexts();
+      const current = client.getCurrentContext();
+
+      console.log(chalk.bold('\n📋 Contextos disponibles:\n'));
+      contexts.forEach((ctx) => {
+        const marker = ctx === current ? chalk.green(' ● ') : chalk.gray(' ○ ');
+        const name = ctx === current ? chalk.greenBright(ctx) : chalk.white(ctx);
+        console.log(`${marker}${name}`);
+      });
+      console.log();
+    } catch (err) {
+      console.error(chalk.red(`\n  ✖ ${errorMessage(err)}\n`));
+      process.exit(1);
+    }
   });
 
 // ─── COMANDO: use-context ───────────────────────────────────────
@@ -47,29 +71,30 @@ program
   .description('Cambiar el contexto por defecto del kubeconfig')
   .action(async (nameArg) => {
     const opts = program.opts();
-    const client = new KubeClient(opts.kubeconfig);
-    const contexts = client.getContexts();
-    const current = client.getCurrentContext();
-
-    let contextName = nameArg;
-
-    if (!contextName) {
-      contextName = await select(
-        '¿A qué contexto quieres cambiar?',
-        contexts,
-      );
-    }
-
-    if (contextName === current) {
-      console.log(chalk.yellow(`\n  Ya estás en el contexto "${contextName}"\n`));
-      return;
-    }
 
     try {
+      const client = new KubeClient(opts.kubeconfig);
+      const contexts = client.getContexts();
+      const current = client.getCurrentContext();
+
+      let contextName = nameArg;
+
+      if (!contextName) {
+        contextName = await select(
+          '¿A qué contexto quieres cambiar?',
+          contexts,
+        );
+      }
+
+      if (contextName === current) {
+        console.log(chalk.yellow(`\n  Ya estás en el contexto "${contextName}"\n`));
+        return;
+      }
+
       client.useContext(contextName);
       console.log(chalk.green(`\n  ● Contexto cambiado a "${contextName}"\n`));
-    } catch (err: any) {
-      console.error(chalk.red(`\n  ✖ ${err.message}\n`));
+    } catch (err) {
+      console.error(chalk.red(`\n  ✖ ${errorMessage(err)}\n`));
       process.exit(1);
     }
   });
@@ -114,8 +139,8 @@ program
       console.log(chalk.bold(`\n📦 Pods en ${chalk.cyan(opts.namespace)}:\n`));
       console.log(table.toString());
       console.log();
-    } catch (err: any) {
-      spinner.fail(chalk.red(`Error: ${err.message}`));
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);
     }
   });
@@ -127,7 +152,7 @@ program
   .option('-c, --container <name>', 'Container específico')
   .option('-t, --tail <lines>', 'Número de líneas', '100')
   .option('--since <seconds>', 'Logs de los últimos N segundos')
-  .option('--level <level>', 'Filtrar por nivel mínimo (DEBUG, INFO, WARN, ERROR)')
+  .option('--level <level>', `Filtrar por nivel mínimo (${VALID_LEVELS})`)
   .option('-s, --search <term>', 'Buscar texto en los logs')
   .option('--service <name>', 'Filtrar por nombre de servicio')
   .option('--trace <id>', 'Filtrar por trace/request ID')
@@ -141,6 +166,7 @@ program
     const spinner = ora('Conectando al cluster...').start();
 
     try {
+      const minLevel = parseMinLevel(cmdOpts.level);
       const client = new KubeClient(opts.kubeconfig, opts.context);
 
       let podName = podArg;
@@ -195,7 +221,7 @@ program
 
       // Filtrar
       const filter: LogFilter = {};
-      if (cmdOpts.level) filter.minLevel = cmdOpts.level.toUpperCase() as LogLevel;
+      if (minLevel) filter.minLevel = minLevel;
       if (cmdOpts.search) filter.search = cmdOpts.search;
       if (cmdOpts.trace) filter.traceId = cmdOpts.trace;
       if (cmdOpts.service) filter.service = cmdOpts.service;
@@ -242,8 +268,8 @@ program
       }
 
       console.log();
-    } catch (err: any) {
-      spinner.fail(chalk.red(`Error: ${err.message}`));
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);
     }
   });
@@ -254,7 +280,7 @@ program
   .description('Seguir logs en tiempo real de uno o más pods')
   .option('-c, --container <name>', 'Container específico')
   .option('-t, --tail <lines>', 'Líneas iniciales', '20')
-  .option('--level <level>', 'Nivel mínimo')
+  .option('--level <level>', `Nivel mínimo (${VALID_LEVELS})`)
   .option('-s, --search <term>', 'Filtrar por texto')
   .option('--exclude <patterns>', 'Excluir patrones')
   .option('--show-extra', 'Mostrar campos extra', false)
@@ -264,6 +290,7 @@ program
     const spinner = ora('Conectando...').start();
 
     try {
+      const minLevel = parseMinLevel(cmdOpts.level);
       const client = new KubeClient(opts.kubeconfig, opts.context);
       let podNames: string[] = podArgs || [];
 
@@ -271,6 +298,11 @@ program
       if (cmdOpts.deployment) {
         spinner.text = `Buscando pods del deployment ${cmdOpts.deployment}...`;
         const pods = await client.getPodsForDeployment(opts.namespace, cmdOpts.deployment);
+        if (pods.length === 0) {
+          spinner.fail(chalk.red(`El deployment "${cmdOpts.deployment}" no tiene pods en "${opts.namespace}"`));
+          process.exitCode = 1;
+          return;
+        }
         podNames = pods.map((p) => p.name);
       }
 
@@ -294,7 +326,7 @@ program
       }
 
       const filter: LogFilter = {};
-      if (cmdOpts.level) filter.minLevel = cmdOpts.level.toUpperCase() as LogLevel;
+      if (minLevel) filter.minLevel = minLevel;
       if (cmdOpts.search) filter.search = cmdOpts.search;
       if (cmdOpts.exclude) filter.excludePatterns = cmdOpts.exclude.split(',').map((s: string) => s.trim());
 
@@ -309,6 +341,23 @@ program
 
       const cleanups: (() => void)[] = [];
 
+      // Cleanup on Ctrl+C
+      process.on('SIGINT', () => {
+        console.log(chalk.gray('\n\n  Deteniendo streams...'));
+        cleanups.forEach((fn) => fn());
+        process.exit(0);
+      });
+
+      // Termina cuando todos los streams han finalizado (cierre normal o error)
+      let pending = podNames.length;
+      let resolveAllDone!: () => void;
+      const allDone = new Promise<void>((resolve) => {
+        resolveAllDone = resolve;
+      });
+      const streamFinished = (): void => {
+        if (--pending === 0) resolveAllDone();
+      };
+
       for (const podName of podNames) {
         const cleanup = await client.streamLogs(
           {
@@ -318,30 +367,30 @@ program
             follow: true,
             tailLines: parseInt(cmdOpts.tail, 10),
           },
-          (line, pod) => {
-            const parsed = parseLogLine(line, pod);
-            if (matchesFilter(parsed, filter)) {
-              console.log(formatLog(parsed, formatOpts));
-            }
-          },
-          (err, pod) => {
-            console.error(chalk.red(`  ✖ Error en ${pod}: ${err.message}`));
+          {
+            onLine: (line, pod) => {
+              const parsed = parseLogLine(line, pod);
+              if (matchesFilter(parsed, filter)) {
+                console.log(formatLog(parsed, formatOpts));
+              }
+            },
+            onError: (err, pod) => {
+              console.error(chalk.red(`  ✖ Error en ${pod}: ${err.message}`));
+              process.exitCode = 1;
+              streamFinished();
+            },
+            onEnd: (pod) => {
+              console.log(chalk.yellow(`  ● Stream finalizado: ${pod}`));
+              streamFinished();
+            },
           }
         );
         cleanups.push(cleanup);
       }
 
-      // Cleanup on Ctrl+C
-      process.on('SIGINT', () => {
-        console.log(chalk.gray('\n\n  Deteniendo streams...'));
-        cleanups.forEach((fn) => fn());
-        process.exit(0);
-      });
-
-      // Mantener el proceso vivo
-      await new Promise(() => {});
-    } catch (err: any) {
-      spinner.fail(chalk.red(`Error: ${err.message}`));
+      await allDone;
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);
     }
   });
@@ -351,45 +400,56 @@ program
   .command('search <term>')
   .description('Buscar un término en logs de todos los pods del namespace')
   .option('-t, --tail <lines>', 'Líneas por pod', '200')
-  .option('--level <level>', 'Nivel mínimo')
+  .option('--level <level>', `Nivel mínimo (${VALID_LEVELS})`)
   .option('-l, --label <selector>', 'Filtrar pods por label')
   .action(async (term, cmdOpts) => {
     const opts = program.opts();
     const spinner = ora('Buscando en todos los pods...').start();
 
     try {
+      const minLevel = parseMinLevel(cmdOpts.level);
       const client = new KubeClient(opts.kubeconfig, opts.context);
       const pods = await client.getPods(opts.namespace, cmdOpts.label);
 
+      const filter: LogFilter = { search: term };
+      if (minLevel) filter.minLevel = minLevel;
+
       const results: ParsedLog[] = [];
+      const failed: { target: string; message: string }[] = [];
+      let searched = 0;
 
       for (const pod of pods) {
-        try {
-          const raw = await client.getLogs({
-            namespace: opts.namespace,
-            podName: pod.name,
-            tailLines: parseInt(cmdOpts.tail, 10),
-          });
+        for (const container of pod.containers) {
+          try {
+            const raw = await client.getLogs({
+              namespace: opts.namespace,
+              podName: pod.name,
+              container,
+              tailLines: parseInt(cmdOpts.tail, 10),
+            });
 
-          const lines = raw.split('\n').filter((l) => l.trim());
-          const parsed = lines.map((line) => parseLogLine(line, pod.name));
-
-          const filter: LogFilter = {
-            search: term,
-            minLevel: cmdOpts.level?.toUpperCase() as LogLevel,
-          };
-
-          const matching = parsed.filter((log) => matchesFilter(log, filter));
-          results.push(...matching);
-        } catch {
-          // Skip pods que no se pueden leer
+            const lines = raw.split('\n').filter((l) => l.trim());
+            const parsed = lines.map((line) => parseLogLine(line, pod.name));
+            results.push(...parsed.filter((log) => matchesFilter(log, filter)));
+            searched++;
+          } catch (err) {
+            failed.push({ target: `${pod.name}/${container}`, message: errorMessage(err) });
+          }
         }
       }
 
       spinner.stop();
 
+      const printFailures = (): void => {
+        if (failed.length === 0) return;
+        console.log(chalk.yellow(`\n  ⚠ No se pudieron leer ${failed.length} contenedor(es):`));
+        failed.forEach((f) => console.log(chalk.yellow(`    - ${f.target}: ${f.message}`)));
+      };
+
       if (results.length === 0) {
-        console.log(chalk.yellow(`\n  No se encontró "${term}" en ${pods.length} pods\n`));
+        console.log(chalk.yellow(`\n  No se encontró "${term}" en ${searched} contenedor(es) de ${pods.length} pod(s)`));
+        printFailures();
+        console.log();
         return;
       }
 
@@ -400,11 +460,17 @@ program
         console.log(formatLog(log, { showPodName: true }));
       });
 
+      printFailures();
       console.log();
-    } catch (err: any) {
-      spinner.fail(chalk.red(`Error: ${err.message}`));
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);
     }
   });
 
-program.parse();
+try {
+  await program.parseAsync();
+} catch (err) {
+  console.error(chalk.red(`\n  ✖ ${errorMessage(err)}\n`));
+  process.exitCode = 1;
+}

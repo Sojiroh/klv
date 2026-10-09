@@ -1,15 +1,36 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
 
+const INPUT_CLOSED = 'Entrada cerrada: no se pudo completar la selección';
+
+// Un iterador de líneas conserva las que llegan juntas (input pegado o por pipe) para los reintentos
+function openInput() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const lines = rl[Symbol.asyncIterator]();
+  return {
+    async ask(prompt: string): Promise<string> {
+      rl.setPrompt(prompt);
+      rl.prompt();
+      const { value, done } = await lines.next();
+      if (done) throw new Error(INPUT_CLOSED);
+      return value;
+    },
+    close: () => rl.close(),
+  };
+}
+
 export async function select(
   message: string,
   choices: string[]
 ): Promise<string> {
   if (choices.length === 0) {
-    throw new Error('No choices available');
+    throw new Error('No hay opciones disponibles');
   }
   if (choices.length === 1) {
-    console.log(chalk.gray(`  → Auto-selected: ${choices[0]}`));
+    console.log(chalk.gray(`  → Auto-seleccionado: ${choices[0]}`));
     return choices[0];
   }
 
@@ -18,23 +39,18 @@ export async function select(
     console.log(chalk.gray(`  ${i + 1}) `) + chalk.white(choice));
   });
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const input = openInput();
 
-  return new Promise((resolve) => {
-    rl.question(chalk.cyan('\n  → Selecciona (número): '), (answer) => {
-      rl.close();
-      const idx = parseInt(answer, 10) - 1;
-      if (idx >= 0 && idx < choices.length) {
-        resolve(choices[idx]);
-      } else {
-        console.log(chalk.yellow('  Selección inválida, usando primera opción'));
-        resolve(choices[0]);
-      }
-    });
-  });
+  try {
+    for (;;) {
+      const answer = (await input.ask(chalk.cyan('\n  → Selecciona (número): '))).trim();
+      const idx = /^\d+$/.test(answer) ? parseInt(answer, 10) - 1 : -1;
+      if (idx >= 0 && idx < choices.length) return choices[idx];
+      console.log(chalk.yellow(`  Selección inválida: introduce un número entre 1 y ${choices.length}`));
+    }
+  } finally {
+    input.close();
+  }
 }
 
 export async function multiSelect(
@@ -43,7 +59,7 @@ export async function multiSelect(
 ): Promise<string[]> {
   if (choices.length === 0) return [];
   if (choices.length === 1) {
-    console.log(chalk.gray(`  → Auto-selected: ${choices[0]}`));
+    console.log(chalk.gray(`  → Auto-seleccionado: ${choices[0]}`));
     return choices;
   }
 
@@ -53,40 +69,32 @@ export async function multiSelect(
     console.log(chalk.gray(`  ${i + 1}) `) + chalk.white(choice));
   });
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const input = openInput();
 
-  return new Promise((resolve) => {
-    rl.question(chalk.cyan('\n  → Selecciona (números separados por coma, 0=todos): '), (answer) => {
-      rl.close();
-      const trimmed = answer.trim();
-      if (trimmed === '0' || trimmed.toLowerCase() === 'all') {
-        resolve(choices);
-        return;
+  try {
+    for (;;) {
+      const answer = (await input.ask(chalk.cyan('\n  → Selecciona (números separados por coma, 0=todos): '))).trim();
+      if (answer === '0' || answer.toLowerCase() === 'all') return choices;
+
+      const indices = answer.split(',').map((s) => (/^\d+$/.test(s.trim()) ? parseInt(s.trim(), 10) - 1 : -1));
+      if (indices.every((i) => i >= 0 && i < choices.length)) {
+        return [...new Set(indices)].map((i) => choices[i]);
       }
-      const indices = trimmed.split(',').map((s) => parseInt(s.trim(), 10) - 1);
-      const selected = indices
-        .filter((i) => i >= 0 && i < choices.length)
-        .map((i) => choices[i]);
-      resolve(selected.length > 0 ? selected : choices);
-    });
-  });
+      console.log(chalk.yellow(`  Selección inválida: usa números entre 1 y ${choices.length} separados por coma, o 0 para todos`));
+    }
+  } finally {
+    input.close();
+  }
 }
 
 export async function confirm(message: string, defaultValue = true): Promise<boolean> {
   const hint = defaultValue ? 'Y/n' : 'y/N';
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const input = openInput();
 
-  return new Promise((resolve) => {
-    rl.question(chalk.cyan(`${message} [${hint}]: `), (answer) => {
-      rl.close();
-      if (!answer.trim()) resolve(defaultValue);
-      else resolve(answer.trim().toLowerCase().startsWith('y'));
-    });
-  });
+  try {
+    const answer = (await input.ask(chalk.cyan(`${message} [${hint}]: `))).trim();
+    return answer ? answer.toLowerCase().startsWith('y') : defaultValue;
+  } finally {
+    input.close();
+  }
 }

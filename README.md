@@ -23,6 +23,8 @@ packages/
 
 ## Instalacion
 
+Requiere Node.js `>=20.19 <21` o `>=22.12` (el servidor NestJS en CommonJS carga `@klv/core`, que es ESM, via `require()`).
+
 ```bash
 git clone https://github.com/Sojiroh/klv.git
 cd klv
@@ -33,7 +35,7 @@ npm run build
 ## Web UI
 
 ```bash
-# Iniciar el servidor (sirve API + frontend en http://localhost:3000)
+# Iniciar el servidor (sirve API + frontend en http://127.0.0.1:3000)
 npm run start -w @klv/web
 
 # Desarrollo (NestJS watch mode)
@@ -42,6 +44,16 @@ npm run dev:web
 # Desarrollo frontend (Vite dev server con proxy al backend)
 npm run dev:client -w @klv/web
 ```
+
+### Configuracion
+
+El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por eso por defecto solo escucha en loopback y solo acepta conexiones WebSocket de origenes conocidos.
+
+| Variable | Default | Descripcion |
+|----------|---------|-------------|
+| `HOST` | `127.0.0.1` | Interfaz donde escucha el servidor. Usa `0.0.0.0` solo si de verdad quieres exponerlo en la red |
+| `PORT` | `3000` | Puerto HTTP/WebSocket |
+| `KLV_ALLOWED_ORIGINS` | — | Origenes extra (separados por coma) aceptados por el WebSocket, ademas de `localhost`/`127.0.0.1` en `PORT` y el dev server `:5173` |
 
 ### Paginas
 
@@ -54,22 +66,27 @@ npm run dev:client -w @klv/web
 
 | Endpoint | Descripcion |
 |----------|-------------|
-| `GET /api/contexts` | Contextos disponibles y actual |
-| `PUT /api/contexts/:name` | Cambiar contexto activo |
+| `GET /api/contexts` | Contextos disponibles y el contexto activo del servidor |
+| `PUT /api/contexts/:name` | Cambiar el contexto activo del servidor (solo en memoria, no modifica `~/.kube/config`) |
 | `GET /api/namespaces` | Listar namespaces |
 | `GET /api/pods/:namespace` | Listar pods |
 | `GET /api/deployments/:namespace` | Listar deployments |
 | `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`) |
-| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container (query: `level`, `search`, `tail`, `since`, `limit`, `offset`) |
+| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`) |
+
+Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 502 si falla el apiserver).
 
 ### WebSocket
 
 Eventos Socket.IO para streaming en tiempo real:
 
-- `stream:start` — Iniciar stream (payload: `{ namespace, pods[], container?, filters? }`)
+- `stream:start` — Iniciar stream (payload: `{ streamId, namespace, pods[], container?, filters? }`); detiene cualquier stream previo del mismo socket
 - `stream:stop` — Detener stream
-- `stream:log` — Log parseado (servidor -> cliente)
-- `stream:error` — Error de stream (servidor -> cliente)
+- `stream:log` — Lote de logs parseados `{ streamId, logs[] }` (servidor -> cliente, cada ~100 ms)
+- `stream:error` — Error de stream `{ streamId, podName?, error }` (servidor -> cliente)
+- `stream:end` — El stream de un pod termino `{ streamId, podName }` (servidor -> cliente)
+
+La app de escritorio emite los mismos eventos (y payloads) via eventos de Tauri.
 
 ## Desktop (Tauri)
 
@@ -93,8 +110,8 @@ npm run build:desktop
 
 | Comando | Descripcion |
 |---------|-------------|
-| `get_contexts` | Contextos disponibles y actual |
-| `set_context` | Cambiar contexto activo |
+| `get_contexts` | Contextos disponibles y el contexto activo |
+| `set_context` | Cambiar el contexto activo (solo en memoria, no modifica `~/.kube/config`) |
 | `get_namespaces` | Listar namespaces |
 | `get_pods` | Listar pods de un namespace |
 | `get_deployments` | Listar deployments |
@@ -119,7 +136,7 @@ node packages/cli/dist/cli.js
 # Ver contextos disponibles
 klv contexts
 
-# Cambiar contexto
+# Cambiar contexto (escribe current-context en tu kubeconfig, igual que kubectl)
 klv use-context mi-contexto
 
 # Listar pods
@@ -171,7 +188,7 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 
 | Flag | Descripcion |
 |------|-------------|
-| `--kubeconfig <path>` | Ruta al kubeconfig (default: `$KUBECONFIG` o `~/.kube/config`) |
+| `--kubeconfig <path>` | Ruta al kubeconfig (default: `$KUBECONFIG`, que puede ser una lista, o `~/.kube/config`) |
 | `--context <name>` | Contexto de K8s a usar |
 | `-n, --namespace <ns>` | Namespace (default: `default`) |
 
@@ -196,15 +213,17 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 
 Reconoce automaticamente campos comunes de logs JSON:
 
-- **Level**: `level`, `severity`, `log.level`, `lvl`
-- **Message**: `message`, `msg`, `log`, `text`
-- **Timestamp**: `timestamp`, `time`, `ts`, `@timestamp`
+- **Level**: `level`, `severity`, `log.level` (plano estilo ECS o anidado), `lvl`, `loglevel`, `log_level`; acepta niveles numericos de pino/bunyan (`30` = INFO, `50` = ERROR) y severidades de GCP (`NOTICE`, `CRITICAL`, `ALERT`, `EMERGENCY`)
+- **Message**: `message`, `msg`, `log`, `text`, `body`
+- **Timestamp**: `timestamp`, `time`, `ts`, `@timestamp`; los epoch numericos (segundos, ms, µs o ns) se normalizan a ISO 8601
 - **Service**: `service`, `service_name`, `app`, `logger`
 - **Trace**: `trace_id`, `traceId`, `x-request-id`, `requestId`
 - **Error**: `error`, `err`, `exception`
-- **Stack**: `stack`, `stackTrace`, `stack_trace`
+- **Stack**: `stack`, `stackTrace`, `stack_trace`, `error.stack_trace`
 
-Compatible con Spring Boot, NestJS, Go (zap/zerolog), Python (structlog), y cualquier formato JSON con campos similares.
+En lineas de texto plano el nivel se detecta por `level=...` (logfmt), por la primera palabra de nivel en mayusculas (`INFO`, `WARN`, `ERROR`...) o por palabras como `error`/`exception`.
+
+Compatible con Spring Boot, NestJS, pino, ECS, Go (zap/zerolog), Python (structlog), Google Cloud Logging y cualquier formato JSON con campos similares.
 
 ## Scripts
 

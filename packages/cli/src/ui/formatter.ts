@@ -67,19 +67,16 @@ function getPodColor(podName: string): (text: string) => string {
 
 function formatTimestamp(ts?: string): string {
   if (!ts) return chalk.gray('--:--:--');
-  try {
-    const date = new Date(ts);
-    return chalk.gray(
-      date.toLocaleTimeString('en-US', {
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      }) + '.' + String(date.getMilliseconds()).padStart(3, '0')
-    );
-  } catch {
-    return chalk.gray(ts.substring(0, 12));
-  }
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return chalk.gray(ts.substring(0, 12));
+  return chalk.gray(
+    date.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }) + '.' + String(date.getMilliseconds()).padStart(3, '0')
+  );
 }
 
 function formatLevel(level: LogLevel): string {

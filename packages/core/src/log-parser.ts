@@ -4,6 +4,7 @@ export interface ParsedLog {
   raw: string;
   isJson: boolean;
   timestamp?: string;
+  k8sTimestamp?: string;
   level: LogLevel;
   message: string;
   service?: string;
@@ -34,53 +35,94 @@ const KNOWN_FIELDS = new Set([
   ...ERROR_FIELDS, ...STACK_FIELDS, ...CALLER_FIELDS,
 ]);
 
+// Alias de niveles (texto). Los niveles numéricos (pino/bunyan) se mapean aparte.
 const LEVEL_MAP: Record<string, LogLevel> = {
   trace: 'TRACE',
   debug: 'DEBUG',
   info: 'INFO',
   information: 'INFO',
+  notice: 'INFO',
   warn: 'WARN',
   warning: 'WARN',
   error: 'ERROR',
   err: 'ERROR',
   fatal: 'FATAL',
   critical: 'FATAL',
+  crit: 'FATAL',
+  alert: 'FATAL',
+  emergency: 'FATAL',
+  emerg: 'FATAL',
   panic: 'FATAL',
 };
 
-function findField(obj: Record<string, unknown>, candidates: string[]): string | undefined {
+// Primero la clave plana literal ("log.level"), luego el recorrido anidado. Null/undefined se ignoran.
+function findValue(obj: Record<string, unknown>, candidates: string[]): unknown {
   for (const field of candidates) {
-    if (field.includes('.')) {
-      const parts = field.split('.');
-      let current: unknown = obj;
-      for (const part of parts) {
-        if (current && typeof current === 'object') {
-          current = (current as Record<string, unknown>)[part];
-        } else {
-          current = undefined;
-          break;
-        }
+    const flat = obj[field];
+    if (flat !== undefined && flat !== null) return flat;
+    if (!field.includes('.')) continue;
+
+    let current: unknown = obj;
+    for (const part of field.split('.')) {
+      if (current && typeof current === 'object') {
+        current = (current as Record<string, unknown>)[part];
+      } else {
+        current = undefined;
+        break;
       }
-      if (current !== undefined) return typeof current === 'object' ? JSON.stringify(current) : String(current);
-    } else if (obj[field] !== undefined && obj[field] !== null) {
-      const val = obj[field];
-      return typeof val === 'object' ? JSON.stringify(val) : String(val);
     }
+    if (current !== undefined && current !== null) return current;
   }
   return undefined;
 }
 
-function parseLevel(raw?: string): LogLevel {
-  if (!raw) return 'UNKNOWN';
-  return LEVEL_MAP[raw.toLowerCase()] ?? 'UNKNOWN';
+function findField(obj: Record<string, unknown>, candidates: string[]): string | undefined {
+  const value = findValue(obj, candidates);
+  if (value === undefined) return undefined;
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
-function detectLevelFromMessage(message: string): LogLevel {
-  const upper = message.toUpperCase();
-  if (upper.includes('ERROR') || upper.includes('EXCEPTION')) return 'ERROR';
-  if (upper.includes('WARN')) return 'WARN';
-  if (upper.includes('DEBUG')) return 'DEBUG';
+export function parseLevel(raw: unknown): LogLevel {
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    return /^\d+$/.test(text) ? parseLevel(Number(text)) : (LEVEL_MAP[text.toLowerCase()] ?? 'UNKNOWN');
+  }
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 'UNKNOWN';
+  if (raw >= 60) return 'FATAL';
+  if (raw >= 50) return 'ERROR';
+  if (raw >= 40) return 'WARN';
+  if (raw >= 30) return 'INFO';
+  if (raw >= 20) return 'DEBUG';
+  if (raw >= 10) return 'TRACE';
   return 'UNKNOWN';
+}
+
+function detectLevelFromText(text: string): LogLevel {
+  const logfmt = text.match(/\b(?:level|lvl|severity)=["']?([A-Za-z]+|\d+)/i);
+  if (logfmt) {
+    const level = parseLevel(logfmt[1]);
+    if (level !== 'UNKNOWN') return level;
+  }
+
+  const keyword = text.match(/\b(TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL|CRIT|ALERT|EMERG|EMERGENCY|PANIC)\b/);
+  if (keyword) return parseLevel(keyword[1]);
+
+  if (/\b(?:error|exception)\b/i.test(text) || /[a-z](?:Exception|Error)\b/.test(text)) return 'ERROR';
+  if (/\bwarn(?:ing)?\b/i.test(text)) return 'WARN';
+  return 'UNKNOWN';
+}
+
+// Epochs numéricos (s, ms, µs, ns) a ISO-8601 UTC; cualquier otro valor se conserva tal cual.
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const original = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const isEpoch = typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value));
+  if (!isEpoch) return original;
+
+  const n = typeof value === 'number' ? value : parseFloat(original);
+  const ms = n < 1e11 ? n * 1e3 : n < 1e14 ? n : n < 1e17 ? n / 1e3 : n / 1e6;
+  const date = new Date(Math.trunc(ms));
+  return Number.isNaN(date.getTime()) ? original : date.toISOString();
 }
 
 export function parseLogLine(line: string, podName?: string): ParsedLog {
@@ -98,55 +140,73 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
     jsonStr = k8sTsMatch[2];
   }
 
+  let record: Record<string, unknown> | undefined;
   try {
-    const obj = JSON.parse(jsonStr);
-    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
-      throw new Error('Not a JSON object');
+    const obj: unknown = JSON.parse(jsonStr);
+    if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+      record = obj as Record<string, unknown>;
     }
-
-    const record = obj as Record<string, unknown>;
-    const timestamp = findField(record, TIMESTAMP_FIELDS) ?? k8sTimestamp;
-    const levelRaw = findField(record, LEVEL_FIELDS);
-    const message = findField(record, MESSAGE_FIELDS) ?? '';
-    const level = parseLevel(levelRaw) !== 'UNKNOWN'
-      ? parseLevel(levelRaw)
-      : detectLevelFromMessage(message);
-
-    // Extraer campos extra (todo lo que no es un campo conocido)
-    const extra: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(record)) {
-      if (!KNOWN_FIELDS.has(key) && value !== undefined && value !== null) {
-        extra[key] = value;
-      }
-    }
-
-    return {
-      raw: trimmed,
-      isJson: true,
-      timestamp,
-      level,
-      message,
-      service: findField(record, SERVICE_FIELDS),
-      traceId: findField(record, TRACE_FIELDS),
-      spanId: findField(record, SPAN_FIELDS),
-      caller: findField(record, CALLER_FIELDS),
-      error: findField(record, ERROR_FIELDS),
-      stackTrace: findField(record, STACK_FIELDS),
-      podName,
-      extra,
-    };
   } catch {
-    // No es JSON, tratar como texto plano
+    // No es JSON
+  }
+
+  if (!record) {
+    // Texto plano
     return {
       raw: trimmed,
       isJson: false,
       timestamp: k8sTimestamp,
-      level: detectLevelFromMessage(trimmed),
+      ...(k8sTimestamp !== undefined && { k8sTimestamp }),
+      level: detectLevelFromText(trimmed),
       message: trimmed,
       podName,
       extra: {},
     };
   }
+
+  const timestamp = normalizeTimestamp(findValue(record, TIMESTAMP_FIELDS)) ?? k8sTimestamp;
+  const message = findField(record, MESSAGE_FIELDS) ?? '';
+  const fieldLevel = parseLevel(findValue(record, LEVEL_FIELDS));
+  const level = fieldLevel !== 'UNKNOWN' ? fieldLevel : detectLevelFromText(message);
+
+  // Extraer campos extra (todo lo que no es un campo conocido)
+  const extra: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (!KNOWN_FIELDS.has(key) && value !== undefined && value !== null) {
+      extra[key] = value;
+    }
+  }
+
+  return {
+    raw: trimmed,
+    isJson: true,
+    timestamp,
+    ...(k8sTimestamp !== undefined && { k8sTimestamp }),
+    level,
+    message,
+    service: findField(record, SERVICE_FIELDS),
+    traceId: findField(record, TRACE_FIELDS),
+    spanId: findField(record, SPAN_FIELDS),
+    caller: findField(record, CALLER_FIELDS),
+    error: findField(record, ERROR_FIELDS),
+    stackTrace: findField(record, STACK_FIELDS),
+    podName,
+    extra,
+  };
+}
+
+// Orden cronológico de logs agregados: clave = k8sTimestamp ?? timestamp; las claves no parseables van al final.
+export function compareLogsByTime(a: ParsedLog, b: ParsedLog): number {
+  const keyA = a.k8sTimestamp ?? a.timestamp ?? '';
+  const keyB = b.k8sTimestamp ?? b.timestamp ?? '';
+  const timeA = Date.parse(keyA);
+  const timeB = Date.parse(keyB);
+  const validA = !Number.isNaN(timeA);
+  const validB = !Number.isNaN(timeB);
+
+  if (validA && validB && timeA !== timeB) return timeA < timeB ? -1 : 1;
+  if (validA !== validB) return validA ? -1 : 1;
+  return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
 }
 
 export function matchesFilter(log: ParsedLog, filter: LogFilter): boolean {

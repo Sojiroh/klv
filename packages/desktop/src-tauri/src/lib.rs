@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod error;
+pub mod names;
 pub mod parser;
 pub mod state;
 
@@ -8,10 +9,11 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let client = tauri::async_runtime::block_on(async {
-                kube::Client::try_default().await.ok()
+                kube::Client::try_default()
+                    .await
+                    .map_err(|e| e.to_string())
             });
             let state = AppState::new(client);
             app.manage(state);

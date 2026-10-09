@@ -2,8 +2,8 @@ interface Props {
   contexts: string[];
   current: string;
   onSwitch: (name: string) => void;
-  namespaces: string[];
-  namespace: string;
+  namespaces: string[] | null;
+  namespace: string | null;
   onNamespaceChange: (ns: string) => void;
 }
 
@@ -26,20 +26,24 @@ export default function ContextSelector({
         </select>
       </div>
 
-      <div className="w-px h-6 bg-klv-border hidden sm:block" />
+      {namespaces && namespace && (
+        <>
+          <div className="w-px h-6 bg-klv-border hidden sm:block" />
 
-      <div className="flex items-center gap-2">
-        <span className="klv-section-label">Namespace</span>
-        <select
-          value={namespace}
-          onChange={(e) => onNamespaceChange(e.target.value)}
-          className="klv-select"
-        >
-          {namespaces.map((ns) => (
-            <option key={ns} value={ns}>{ns}</option>
-          ))}
-        </select>
-      </div>
+          <div className="flex items-center gap-2">
+            <span className="klv-section-label">Namespace</span>
+            <select
+              value={namespace}
+              onChange={(e) => onNamespaceChange(e.target.value)}
+              className="klv-select"
+            >
+              {namespaces.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
     </div>
   );
 }

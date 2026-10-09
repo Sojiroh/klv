@@ -1,53 +1,65 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useState, useEffect, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useNamespaces } from '../hooks/useNamespaces';
 import { useStream } from '../hooks/useStream';
-import LogLine from '../components/LogLine';
+import VirtualLogList from '../components/VirtualLogList';
+import ErrorNotice from '../components/ErrorNotice';
 import LogDetailPanel from '../components/LogDetailPanel';
 import { type ParsedLog, type Pod } from '../types';
 
 export default function Stream() {
-  const [namespace, setNamespace] = useState('default');
+  const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
   const [selectedContainer, setSelectedContainer] = useState('');
   const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
-  const [paused, setPaused] = useState(false);
-  const parentRef = useRef<HTMLDivElement>(null);
+  const [frozen, setFrozen] = useState<ParsedLog[] | null>(null);
 
-  const { data: namespaces } = useApi<string[]>('/api/namespaces');
-  const { data: pods } = useApi<Pod[]>(`/api/pods/${namespace}`);
-  const { logs, connected, streaming, start, stop, clear } = useStream();
+  const { data: pods, error: podsError } = useApi<Pod[]>(
+    namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
+  );
+  const { logs, notices, connected, streaming, start, stop, clear } = useStream();
 
-  const virtualizer = useVirtualizer({
-    count: logs.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 28,
-    overscan: 20,
-  });
+  const paused = frozen !== null;
+  const displayed = frozen ?? logs;
 
   useEffect(() => {
-    if (autoScroll && !paused && logs.length > 0) {
-      virtualizer.scrollToIndex(logs.length - 1, { align: 'end' });
-    }
-  }, [logs.length, autoScroll, paused]);
+    if (!streaming) setFrozen(null);
+  }, [streaming]);
 
   const containers = useMemo(() => {
     if (!pods) return [];
     return [...new Set(pods.flatMap((p) => p.containers))];
   }, [pods]);
 
-  const podCount = pods?.length ?? 0;
+  const targetPods = useMemo(() => {
+    if (!pods) return [];
+    return selectedContainer ? pods.filter((p) => p.containers.includes(selectedContainer)) : pods;
+  }, [pods, selectedContainer]);
+
+  const podCount = targetPods.length;
 
   const handleStart = () => {
-    if (!selectedContainer || !pods) return;
-    start({
+    if (!selectedContainer || !namespace || targetPods.length === 0) return;
+    void start({
       namespace,
-      pods: pods.map((p) => p.name),
+      pods: targetPods.map((p) => p.name),
       container: selectedContainer,
-    }).catch((err: unknown) => {
-      console.error('Stream start failed:', err);
     });
   };
+
+  const handleStop = () => {
+    stop();
+    setFrozen(null);
+  };
+
+  const handleClear = () => {
+    clear();
+    if (paused) setFrozen([]);
+  };
+
+  const togglePause = () => setFrozen(paused ? null : logs);
+
+  const error = namespacesError ?? podsError;
 
   return (
     <div className="stagger-children">
@@ -62,6 +74,8 @@ export default function Stream() {
         </div>
       </div>
 
+      {error && <ErrorNotice message={error} />}
+
       {/* Setup controls */}
       {!streaming && (
         <div className="klv-card p-5 mb-5 space-y-4">
@@ -69,12 +83,12 @@ export default function Stream() {
             <div className="flex items-center gap-2">
               <span className="klv-section-label">Namespace</span>
               <select
-                value={namespace}
+                value={namespace ?? ''}
                 onChange={(e) => { setNamespace(e.target.value); setSelectedContainer(''); }}
                 className="klv-select"
               >
-                {namespaces?.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
+                {namespaces?.map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
             </div>
@@ -108,7 +122,7 @@ export default function Stream() {
 
               <button
                 onClick={handleStart}
-                disabled={!selectedContainer}
+                disabled={!selectedContainer || !connected || podCount === 0}
                 className="klv-btn-primary"
               >
                 Start streaming
@@ -124,16 +138,16 @@ export default function Stream() {
       {/* Streaming controls */}
       {streaming && (
         <div className="flex items-center gap-3 mb-4 animate-fade-in">
-          <button onClick={stop} className="klv-btn-danger">
+          <button onClick={handleStop} className="klv-btn-danger">
             Stop
           </button>
           <button
-            onClick={() => setPaused(!paused)}
+            onClick={togglePause}
             className="klv-btn-secondary"
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button onClick={clear} className="klv-btn-secondary">
+          <button onClick={handleClear} className="klv-btn-secondary">
             Clear
           </button>
 
@@ -148,40 +162,38 @@ export default function Stream() {
           </label>
 
           <span className="text-xs text-klv-text-muted font-mono ml-auto">
-            {logs.length} logs
+            {displayed.length} logs{paused && ' (paused)'}
           </span>
         </div>
       )}
 
+      {notices.length > 0 && (
+        <div className="klv-card px-4 py-3 mb-4 max-h-32 overflow-auto text-xs font-mono space-y-0.5">
+          {notices.map((n, i) => (
+            <p key={i} className={n.kind === 'error' ? 'text-red-400' : 'text-klv-text-muted'}>
+              {n.podName ? `${n.podName}: ` : ''}{n.message}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Log output */}
-      <div ref={parentRef} className="klv-log-container" style={{ maxHeight: 'calc(100vh - 280px)', overflow: 'auto' }}>
-        {logs.length > 0 ? (
-          <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const log = logs[virtualRow.index];
-              return (
-                <div
-                  key={virtualRow.index}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                >
-                  <LogLine log={log} showRaw={false} onClick={(log) => { setSelectedLog(log); if (streaming && !paused) setPaused(true); }} />
-                </div>
-              );
-            })}
-          </div>
-        ) : streaming ? (
+      <VirtualLogList
+        logs={displayed}
+        maxHeight="calc(100vh - 280px)"
+        followTail={autoScroll && !paused}
+        showPodName
+        onSelect={(log) => {
+          setSelectedLog(log);
+          if (streaming && !paused) setFrozen(logs);
+        }}
+        empty={streaming ? (
           <div className="text-center py-12">
             <span className="inline-block w-2 h-2 rounded-full bg-klv-accent animate-pulse-dot mr-2" />
             <span className="text-klv-text-muted text-sm">Waiting for logs...</span>
           </div>
         ) : null}
-      </div>
+      />
 
       <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
     </div>

@@ -96,12 +96,12 @@ All packages: `strict: true`, `esModuleInterop: true`, `skipLibCheck: true`,
 
 ### Error Handling
 
-- **Core library:** Throw `Error` with descriptive messages in Spanish
+- **Core library:** Throw `KubeError` (message in Spanish, `statusCode` from the apiserver or 400 for invalid names); validate k8s names with `assertK8sName` before building requests
 - **CLI:** Catch in action handlers, show with `spinner.fail()` or `chalk.red()`, `process.exit(1)`
-- **NestJS services:** Let NestJS handle exceptions; use try/catch only for fallback behavior
-  (e.g., `getNamespaces` falls back to kubeconfig namespace on permission error)
-- **React client:** Catch in hooks, store error in state; use `console.error` in event handlers
-- **Empty catch blocks:** Allowed for intentional skip-on-failure patterns (e.g., skipping unreadable pods)
+- **NestJS services:** Let NestJS handle exceptions (a global filter maps `KubeError.statusCode` to the HTTP status); use try/catch only for fallback behavior
+  (e.g., `getNamespaces` falls back to kubeconfig namespace only on 403)
+- **React client:** API calls go through `lib/api.ts`; catch in hooks, store error in state and render it
+- **Partial failures:** Report them (e.g., `failedPods` in aggregated logs) instead of silently skipping
 
 ### Formatting
 
@@ -168,6 +168,8 @@ Desktop builds run automatically via `.github/workflows/build-desktop.yml` using
 - UI text and error messages are in Spanish (this is intentional)
 - The CLI uses emoji icons in output (e.g., `📋`, `📦`, `✖`)
 - The project reads the same kubeconfig as OpenLens (~/.kube/config)
-- WebSocket events use `stream:` prefix (`stream:start`, `stream:stop`, `stream:log`, `stream:error`)
+- WebSocket events use `stream:` prefix (`stream:start`, `stream:stop`, `stream:log`, `stream:error`, `stream:end`); every server event carries the `streamId` sent in `stream:start`, and `stream:log` carries a batch (`{ streamId, logs }`). Tauri events use the same names and payloads
+- The web server binds `127.0.0.1` by default (`HOST`/`PORT` env) and only accepts WebSocket origins from its own host, the Vite dev server, or `KLV_ALLOWED_ORIGINS`
+- Context switches from the Web UI / desktop are in-memory only; only the CLI `use-context` writes `current-context` to the kubeconfig
 - The web client proxies `/api` and `/socket.io` to localhost:3000 during development
 - Barrel exports from `packages/core/src/index.ts` — always import from `@klv/core`, not deep paths

@@ -1,6 +1,6 @@
 {
   "name": "@klv/cli",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "bin": {
     "klv": "./dist/cli.js"
@@ -15,9 +15,7 @@
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^12.1.0",
-    "date-fns": "^3.6.0",
-    "ora": "^8.0.1",
-    "strip-ansi": "^7.1.0"
+    "ora": "^8.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

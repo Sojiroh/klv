@@ -26,9 +26,17 @@ impl std::fmt::Display for KlvError {
 
 impl std::error::Error for KlvError {}
 
+/// Mensaje legible de un error de kube: para errores del apiserver, el `Status.message`.
+pub fn kube_error_message(e: &kube::Error) -> String {
+    match e {
+        kube::Error::Api(resp) if !resp.message.is_empty() => resp.message.clone(),
+        other => other.to_string(),
+    }
+}
+
 impl From<kube::Error> for KlvError {
     fn from(e: kube::Error) -> Self {
-        Self::new(e.to_string())
+        Self::new(kube_error_message(&e))
     }
 }
 

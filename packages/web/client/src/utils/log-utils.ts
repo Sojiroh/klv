@@ -8,26 +8,6 @@ export const levelConfig: Record<string, { color: string; bg: string; icon: stri
   UNKNOWN: { color: 'text-zinc-400', bg: 'bg-zinc-400/10', icon: '?' },
 };
 
-export const levelColors: Record<string, string> = {
-  TRACE: 'text-zinc-500',
-  DEBUG: 'text-sky-400',
-  INFO: 'text-emerald-400',
-  WARN: 'text-amber-400',
-  ERROR: 'text-red-400',
-  FATAL: 'text-red-500',
-  UNKNOWN: 'text-zinc-400',
-};
-
-export const levelBg: Record<string, string> = {
-  TRACE: 'bg-zinc-500/10',
-  DEBUG: 'bg-sky-400/10',
-  INFO: 'bg-emerald-400/10',
-  WARN: 'bg-amber-400/10',
-  ERROR: 'bg-red-400/10',
-  FATAL: 'bg-red-500/15',
-  UNKNOWN: 'bg-zinc-400/10',
-};
-
 export const statusStyles: Record<string, { dot: string; text: string }> = {
   Running: { dot: 'bg-emerald-400', text: 'text-emerald-400' },
   Pending: { dot: 'bg-amber-400', text: 'text-amber-400' },
@@ -50,21 +30,28 @@ export function prettyRaw(raw: string): string {
   }
 }
 
+function parseDate(ts: string): Date | null {
+  let d: Date;
+  if (/^\d+(\.\d+)?$/.test(ts)) {
+    const n = Number(ts);
+    const ms = n < 1e11 ? n * 1000 : n < 1e14 ? n : n < 1e17 ? n / 1e3 : n / 1e6;
+    d = new Date(Math.trunc(ms));
+  } else {
+    d = new Date(ts);
+  }
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function formatTime(ts?: string): string {
   if (!ts) return '--:--:--';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
-  } catch {
-    return ts.substring(0, 12);
-  }
+  const d = parseDate(ts);
+  if (!d) return ts;
+  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
 export function formatTimestamp(ts?: string): string {
   if (!ts) return '--';
-  try {
-    return new Date(ts).toLocaleString('en-US', { hour12: false });
-  } catch {
-    return ts;
-  }
+  const d = parseDate(ts);
+  if (!d) return ts;
+  return d.toLocaleString('en-US', { hour12: false });
 }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{command, State};
 
-use crate::error::KlvError;
+use crate::error::{kube_error_message, KlvError};
+use crate::names::{validate_name, NameKind};
 use crate::state::AppState;
 
 #[derive(Serialize, Clone)]
@@ -23,6 +24,7 @@ pub async fn get_pods(
     namespace: String,
     label: Option<String>,
 ) -> Result<Vec<PodInfo>, KlvError> {
+    validate_name(NameKind::Namespace, &namespace)?;
     let client = state.get_client().await?;
 
     use k8s_openapi::api::core::v1::Pod;
@@ -35,7 +37,10 @@ pub async fn get_pods(
     }
 
     let list = pods_api.list(&lp).await.map_err(|e| {
-        KlvError::new(format!("Error al obtener pods del namespace \"{namespace}\": {e}"))
+        KlvError::new(format!(
+            "Error al obtener pods del namespace \"{namespace}\": {}",
+            kube_error_message(&e)
+        ))
     })?;
 
     let pods: Vec<PodInfo> = list

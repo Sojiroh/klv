@@ -1,11 +1,14 @@
-import { useState, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { useApi } from '../hooks/useApi';
-import LogLine from '../components/LogLine';
+import VirtualLogList from '../components/VirtualLogList';
+import ErrorNotice from '../components/ErrorNotice';
+import FailedPodsWarning from '../components/FailedPodsWarning';
 import LogFilters from '../components/LogFilters';
 import LogDetailPanel from '../components/LogDetailPanel';
-import { type ParsedLog, type Pod } from '../types';
+import { type LogsResponse, type ParsedLog, type Pod } from '../types';
+
+const SEARCH_DEBOUNCE_MS = 300;
 
 export default function Logs() {
   const { namespace, pod, container: containerParam } = useParams<{
@@ -16,8 +19,14 @@ export default function Logs() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [level, setLevel] = useState('');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const isAggregated = !pod && !!containerParam;
 
@@ -33,8 +42,10 @@ export default function Logs() {
     setSearchParams(next, { replace: true });
   };
 
+  const ns = encodeURIComponent(namespace ?? '');
+
   const { data: pods } = useApi<Pick<Pod, 'name' | 'containers'>[]>(
-    !isAggregated ? `/api/pods/${namespace}` : null,
+    !isAggregated ? `/api/pods/${ns}` : null,
   );
   const currentPod = pods?.find((p) => p.name === pod);
   const containers = currentPod?.containers ?? [];
@@ -43,22 +54,13 @@ export default function Logs() {
   const params = new URLSearchParams();
   if (!isAggregated && containerFromQuery) params.set('container', containerFromQuery);
   if (level) params.set('level', level);
-  if (search) params.set('search', search);
+  if (debouncedSearch) params.set('search', debouncedSearch);
 
   const apiUrl = isAggregated
-    ? `/api/pods/${namespace}/container/${containerParam}/logs?${params.toString()}`
-    : `/api/pods/${namespace}/${pod}/logs?${params.toString()}`;
+    ? `/api/pods/${ns}/container/${encodeURIComponent(containerParam ?? '')}/logs?${params.toString()}`
+    : `/api/pods/${ns}/${encodeURIComponent(pod ?? '')}/logs?${params.toString()}`;
 
-  const { data, loading } = useApi<{ logs: ParsedLog[]; total: number; pods?: string[] }>(apiUrl);
-
-  const logCount = data?.logs.length ?? 0;
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: logCount,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => showRaw ? 80 : 28,
-    overscan: 20,
-  });
+  const { data, loading, error } = useApi<LogsResponse>(apiUrl);
 
   return (
     <>
@@ -127,37 +129,24 @@ export default function Logs() {
           onRawToggle={() => setShowRaw(!showRaw)}
         />
 
+        {error && <ErrorNotice message={error} />}
+
+        <FailedPodsWarning failedPods={data?.failedPods} />
+
         {loading && (
           <div className="klv-card px-6 py-12 text-center animate-pulse">
             <p className="text-klv-text-muted">Loading logs...</p>
           </div>
         )}
 
-        <div ref={parentRef} className="klv-log-container" style={{ maxHeight: 'calc(100vh - 220px)', overflow: 'auto' }}>
-          {logCount > 0 ? (
-            <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const log = data!.logs[virtualRow.index];
-                return (
-                  <div
-                    key={virtualRow.index}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                  >
-                    <LogLine log={log} showRaw={showRaw} onClick={setSelectedLog} showPodName={isAggregated} />
-                  </div>
-                );
-              })}
-            </div>
-          ) : data ? (
-            <p className="text-klv-text-muted text-center py-8 text-sm">No logs found</p>
-          ) : null}
-        </div>
+        <VirtualLogList
+          logs={data?.logs ?? []}
+          maxHeight="calc(100vh - 220px)"
+          showRaw={showRaw}
+          showPodName={isAggregated}
+          onSelect={setSelectedLog}
+          empty={data ? <p className="text-klv-text-muted text-center py-8 text-sm">No logs found</p> : null}
+        />
       </div>
 
       <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />

@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { type ParsedLog, type StreamOptions } from '../types';
+import type {
+  StreamEndEvent,
+  StreamErrorEvent,
+  StreamLogEvent,
+  StreamOptions,
+} from '../types';
 
 export const isTauri = () =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -8,6 +13,10 @@ export const isTauri = () =>
 interface RouteMatch {
   command: string;
   args: Record<string, unknown>;
+}
+
+function optionalNumber(params: URLSearchParams, key: string): number | undefined {
+  return params.has(key) ? Number(params.get(key)) : undefined;
 }
 
 function matchRoute(url: string): RouteMatch | null {
@@ -19,18 +28,16 @@ function matchRoute(url: string): RouteMatch | null {
     return { command: 'get_contexts', args: {} };
   }
 
-  const ctxMatch = path.match(/^\/api\/contexts\/(.+)$/);
-  if (ctxMatch) {
-    return { command: 'set_context', args: { name: ctxMatch[1] } };
-  }
-
   if (path === '/api/namespaces') {
     return { command: 'get_namespaces', args: {} };
   }
 
   const deployMatch = path.match(/^\/api\/deployments\/([^/]+)$/);
   if (deployMatch) {
-    return { command: 'get_deployments', args: { namespace: deployMatch[1] } };
+    return {
+      command: 'get_deployments',
+      args: { namespace: decodeURIComponent(deployMatch[1]) },
+    };
   }
 
   const containerLogMatch = path.match(
@@ -40,10 +47,10 @@ function matchRoute(url: string): RouteMatch | null {
     return {
       command: 'get_container_logs',
       args: {
-        namespace: containerLogMatch[1],
-        container: containerLogMatch[2],
-        tail: params.has('tail') ? Number(params.get('tail')) : undefined,
-        since: params.has('since') ? Number(params.get('since')) : undefined,
+        namespace: decodeURIComponent(containerLogMatch[1]),
+        container: decodeURIComponent(containerLogMatch[2]),
+        tail: optionalNumber(params, 'tail'),
+        since: optionalNumber(params, 'since'),
         level: params.get('level') || undefined,
         search: params.get('search') || undefined,
       },
@@ -56,11 +63,11 @@ function matchRoute(url: string): RouteMatch | null {
       command: 'get_pod_logs',
       args: {
         params: {
-          namespace: podLogMatch[1],
-          pod: podLogMatch[2],
+          namespace: decodeURIComponent(podLogMatch[1]),
+          pod: decodeURIComponent(podLogMatch[2]),
           container: params.get('container') || undefined,
-          tail: params.has('tail') ? Number(params.get('tail')) : undefined,
-          since: params.has('since') ? Number(params.get('since')) : undefined,
+          tail: optionalNumber(params, 'tail'),
+          since: optionalNumber(params, 'since'),
           level: params.get('level') || undefined,
           search: params.get('search') || undefined,
         },
@@ -72,7 +79,7 @@ function matchRoute(url: string): RouteMatch | null {
   if (podsMatch) {
     return {
       command: 'get_pods',
-      args: { namespace: podsMatch[1] },
+      args: { namespace: decodeURIComponent(podsMatch[1]) },
     };
   }
 
@@ -81,10 +88,11 @@ function matchRoute(url: string): RouteMatch | null {
 
 export async function invokeApi<T>(url: string, options?: { method?: string }): Promise<T> {
   if (options?.method === 'PUT') {
-    const ctxMatch = url.match(/\/api\/contexts\/(.+)/);
-    if (ctxMatch) {
-      return invoke<T>('set_context', { name: decodeURIComponent(ctxMatch[1]) });
+    const ctxMatch = url.match(/^\/api\/contexts\/([^/?]+)$/);
+    if (!ctxMatch) {
+      throw new Error(`No Tauri command mapped for: PUT ${url}`);
     }
+    return invoke<T>('set_context', { name: decodeURIComponent(ctxMatch[1]) });
   }
 
   const route = matchRoute(url);
@@ -106,15 +114,19 @@ export async function tauriStreamStop(streamId: string): Promise<void> {
 }
 
 export function onStreamLog(
-  callback: (log: ParsedLog) => void,
+  callback: (event: StreamLogEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<ParsedLog>('stream:log', (event: { payload: ParsedLog }) => callback(event.payload));
+  return listen<StreamLogEvent>('stream:log', (event) => callback(event.payload));
 }
 
 export function onStreamError(
-  callback: (err: { podName: string; error: string }) => void,
+  callback: (event: StreamErrorEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ podName: string; error: string }>('stream:error', (event: { payload: { podName: string; error: string } }) =>
-    callback(event.payload),
-  );
+  return listen<StreamErrorEvent>('stream:error', (event) => callback(event.payload));
+}
+
+export function onStreamEnd(
+  callback: (event: StreamEndEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<StreamEndEvent>('stream:end', (event) => callback(event.payload));
 }

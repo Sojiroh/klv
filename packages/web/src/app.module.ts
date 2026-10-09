@@ -8,7 +8,7 @@ import { LogModule } from './log/log.module';
   imports: [
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'client-dist'),
-      exclude: ['/api/(.*)'],
+      exclude: ['/api/{*path}'],
     }),
     KubeModule,
     LogModule,

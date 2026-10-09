@@ -105,7 +105,7 @@ function ContainerRow({
         </td>
         <td className="py-3 px-4 text-right">
           <Link
-            to={`/logs/${namespace}/container/${encodeURIComponent(g.container)}`}
+            to={`/logs/${encodeURIComponent(namespace)}/container/${encodeURIComponent(g.container)}`}
             className="inline-flex items-center gap-1 text-xs font-medium text-klv-accent hover:text-klv-accent-hover transition-colors"
           >
             View Logs
@@ -120,7 +120,12 @@ function ContainerRow({
           <tr key={pod.name} className="bg-klv-base/50">
             <td className="py-2 px-4"></td>
             <td className="py-2 px-4 pl-10">
-              <span className="font-mono text-xs text-klv-text-muted">{pod.name}</span>
+              <Link
+                to={`/logs/${encodeURIComponent(namespace)}/${encodeURIComponent(pod.name)}?container=${encodeURIComponent(g.container)}`}
+                className="font-mono text-xs text-klv-text-muted hover:text-klv-accent transition-colors"
+              >
+                {pod.name}
+              </Link>
             </td>
             <td className="py-2 px-4"></td>
             <td className="py-2 px-4">

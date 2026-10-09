@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { type ParsedLog } from '../types';
-import { formatTimestamp, levelBg, levelColors, prettyRaw } from '../utils/log-utils';
+import { formatTimestamp, levelConfig, prettyRaw } from '../utils/log-utils';
 
 function Field({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
@@ -23,6 +23,8 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
 
   if (!log) return null;
 
+  const cfg = levelConfig[log.level] ?? levelConfig.UNKNOWN;
+
   return (
     <>
       {/* Backdrop */}
@@ -42,7 +44,7 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
             {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-klv-border">
               <div className="flex items-center gap-3">
-                <span className={`klv-badge ${levelBg[log.level] ?? ''} ${levelColors[log.level] ?? 'text-zinc-400'} font-semibold`}>
+                <span className={`klv-badge ${cfg.bg} ${cfg.color} font-semibold`}>
                   {log.level}
                 </span>
                 <span className="text-xs text-klv-text-muted font-mono">{formatTimestamp(log.timestamp)}</span>
@@ -68,6 +70,9 @@ export default function LogDetailPanel({ log, onClose }: { log: ParsedLog | null
                   <Field label="message" value={log.message} />
                   {log.service && <Field label="service" value={log.service} color="text-sky-400" />}
                   {log.podName && <Field label="pod" value={log.podName} color="text-violet-400" />}
+                  {log.traceId && <Field label="traceId" value={log.traceId} />}
+                  {log.spanId && <Field label="spanId" value={log.spanId} />}
+                  {log.caller && <Field label="caller" value={log.caller} />}
                   {log.error && <Field label="error" value={log.error} color="text-red-400" />}
                 </div>
               </section>

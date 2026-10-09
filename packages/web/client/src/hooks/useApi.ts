@@ -1,32 +1,36 @@
 import { useState, useEffect } from 'react';
-import { isTauri, invokeApi } from '../lib/tauri';
+import { apiRequest } from '../lib/api';
+
+interface ApiResult<T> {
+  url: string;
+  data: T | null;
+  error: string | null;
+}
 
 export function useApi<T>(url: string | null) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ApiResult<T> | null>(null);
 
   useEffect(() => {
     if (!url) return;
-    setLoading(true);
-    setError(null);
+    const controller = new AbortController();
 
-    if (isTauri()) {
-      invokeApi<T>(url)
-        .then(setData)
-        .catch((err: any) => setError(err.message ?? String(err)))
-        .finally(() => setLoading(false));
-    } else {
-      fetch(url)
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-        .then(setData)
-        .catch((err) => setError(err.message))
-        .finally(() => setLoading(false));
-    }
+    apiRequest<T>(url, { signal: controller.signal })
+      .then((data) => {
+        if (!controller.signal.aborted) setResult({ url, data, error: null });
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        setResult({ url, data: null, error: err instanceof Error ? err.message : String(err) });
+      });
+
+    return () => controller.abort();
   }, [url]);
 
-  return { data, loading, error, refetch: () => setData(null) };
+  const current = result !== null && result.url === url ? result : null;
+
+  return {
+    data: current?.data ?? null,
+    loading: url !== null && current === null,
+    error: current?.error ?? null,
+  };
 }
