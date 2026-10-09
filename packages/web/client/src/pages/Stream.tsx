@@ -1,23 +1,46 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useExplorerParams } from '../hooks/useExplorerParams';
 import { useNamespaces } from '../hooks/useNamespaces';
+import { usePersistentState } from '../hooks/usePersistentState';
 import { useStream } from '../hooks/useStream';
-import VirtualLogList from '../components/VirtualLogList';
 import ErrorNotice from '../components/ErrorNotice';
-import LogDetailPanel from '../components/LogDetailPanel';
+import Explorer from '../components/explorer/Explorer';
 import { type ParsedLog, type Pod } from '../types';
 
+const BUFFER_SIZES = [2000, 5000, 10000, 25000, 50000];
+const DEFAULT_BUFFER_SIZE = 10000;
+
+function BufferSelect({ value, onChange }: { value: number; onChange: (size: number) => void }) {
+  return (
+    <label className="flex items-center gap-2" title="Maximum number of lines kept in memory; the oldest are dropped">
+      <span className="klv-section-label">Buffer</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="klv-select !py-1 text-xs font-mono"
+      >
+        {BUFFER_SIZES.map((n) => (
+          <option key={n} value={n}>{n.toLocaleString()}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export default function Stream() {
+  const params = useExplorerParams('24h');
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
   const [selectedContainer, setSelectedContainer] = useState('');
-  const [selectedLog, setSelectedLog] = useState<ParsedLog | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [frozen, setFrozen] = useState<ParsedLog[] | null>(null);
+  const [storedBufferSize, setBufferSize] = usePersistentState('klv.stream.bufferSize', DEFAULT_BUFFER_SIZE);
+  const bufferSize = BUFFER_SIZES.includes(storedBufferSize) ? storedBufferSize : DEFAULT_BUFFER_SIZE;
 
   const { data: pods, error: podsError } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
-  const { logs, notices, connected, streaming, start, stop, clear } = useStream();
+  const { logs, dropped, notices, connected, streaming, start, stop, clear } = useStream({ bufferSize });
 
   const paused = frozen !== null;
   const displayed = frozen ?? logs;
@@ -79,7 +102,7 @@ export default function Stream() {
       {/* Setup controls */}
       {!streaming && (
         <div className="klv-card p-5 mb-5 space-y-4">
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2">
               <span className="klv-section-label">Namespace</span>
               <select
@@ -95,6 +118,9 @@ export default function Stream() {
             <span className="klv-badge bg-klv-elevated text-klv-text-muted border border-klv-border">
               {podCount} pod{podCount !== 1 ? 's' : ''}
             </span>
+            <div className="ml-auto">
+              <BufferSelect value={bufferSize} onChange={setBufferSize} />
+            </div>
           </div>
 
           {containers.length > 0 && (
@@ -137,7 +163,7 @@ export default function Stream() {
 
       {/* Streaming controls */}
       {streaming && (
-        <div className="flex items-center gap-3 mb-4 animate-fade-in">
+        <div className="flex flex-wrap items-center gap-3 mb-4 animate-fade-in">
           <button onClick={handleStop} className="klv-btn-danger">
             Stop
           </button>
@@ -161,8 +187,17 @@ export default function Stream() {
             Auto-scroll
           </label>
 
-          <span className="text-xs text-klv-text-muted font-mono ml-auto">
-            {displayed.length} logs{paused && ' (paused)'}
+          <BufferSelect value={bufferSize} onChange={setBufferSize} />
+
+          <span className="text-xs text-klv-text-muted font-mono ml-auto flex items-center gap-3">
+            {dropped > 0 && (
+              <span className="text-amber-400" title="Lines discarded because the buffer was full">
+                {dropped.toLocaleString()} dropped
+              </span>
+            )}
+            <span>
+              {displayed.length.toLocaleString()} buffered{paused && ' (paused)'}
+            </span>
           </span>
         </div>
       )}
@@ -177,25 +212,32 @@ export default function Stream() {
         </div>
       )}
 
-      {/* Log output */}
-      <VirtualLogList
-        logs={displayed}
-        maxHeight="calc(100vh - 280px)"
-        followTail={autoScroll && !paused}
-        showPodName
-        onSelect={(log) => {
-          setSelectedLog(log);
-          if (streaming && !paused) setFrozen(logs);
-        }}
-        empty={streaming ? (
-          <div className="text-center py-12">
-            <span className="inline-block w-2 h-2 rounded-full bg-klv-accent animate-pulse-dot mr-2" />
-            <span className="text-klv-text-muted text-sm">Waiting for logs...</span>
-          </div>
-        ) : null}
-      />
-
-      <LogDetailPanel log={selectedLog} onClose={() => setSelectedLog(null)} />
+      {/* Explorer over the live buffer (filtering is client-side; the stream is never restarted) */}
+      {(streaming || displayed.length > 0) && (
+        <Explorer
+          params={params}
+          source="kubelet"
+          logs={displayed}
+          showRange={false}
+          followTail={streaming && autoScroll && !paused}
+          scope={{ namespace: namespace ?? undefined, container: selectedContainer || undefined }}
+          exportName={`stream-${selectedContainer || 'logs'}`}
+          maxHeight="max(320px, calc(100vh - 520px))"
+          emptyMessage={
+            streaming ? (
+              <>
+                <span className="inline-block w-2 h-2 rounded-full bg-klv-accent animate-pulse-dot mr-2" />
+                Waiting for logs...
+              </>
+            ) : (
+              'No logs'
+            )
+          }
+          onLogSelect={() => {
+            if (streaming && !paused) setFrozen(logs);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -7,7 +7,6 @@ pub struct LogFilter {
     pub search: Option<String>,
     pub trace_id: Option<String>,
     pub service: Option<String>,
-    pub exclude_patterns: Option<Vec<String>>,
 }
 
 pub fn matches_filter(log: &ParsedLog, filter: &LogFilter) -> bool {
@@ -47,14 +46,6 @@ pub fn matches_filter(log: &ParsedLog, filter: &LogFilter) -> bool {
     if let Some(ref service) = filter.service {
         if log.service.as_deref() != Some(service) {
             return false;
-        }
-    }
-
-    if let Some(ref patterns) = filter.exclude_patterns {
-        for pattern in patterns {
-            if log.message.contains(pattern) {
-                return false;
-            }
         }
     }
 

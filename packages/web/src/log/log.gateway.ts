@@ -8,14 +8,7 @@ import {
 } from '@nestjs/websockets';
 import type { IncomingMessage } from 'http';
 import { Server, Socket } from 'socket.io';
-import {
-  parseLogLine,
-  matchesFilter,
-  parseLevel,
-  assertK8sName,
-  type LogFilter,
-  type ParsedLog,
-} from '@klv/core';
+import { parseLogLine, assertK8sName, type ParsedLog } from '@klv/core';
 import { ALLOWED_ORIGINS } from '../config';
 import { KubeService } from '../kube/kube.service';
 
@@ -28,11 +21,6 @@ interface StreamStartPayload {
   namespace: string;
   pods: string[];
   container?: string;
-  filters?: {
-    level?: string;
-    search?: string;
-    excludePatterns?: string[];
-  };
 }
 
 interface StreamSession {
@@ -47,7 +35,7 @@ function validatePayload(payload: unknown): StreamStartPayload {
   if (typeof payload !== 'object' || payload === null) {
     throw new Error('Payload de stream inválido');
   }
-  const { streamId, namespace, pods, container, filters } = payload as Record<string, unknown>;
+  const { streamId, namespace, pods, container } = payload as Record<string, unknown>;
 
   if (typeof streamId !== 'string' || streamId === '') {
     throw new Error('streamId debe ser un string no vacío');
@@ -69,27 +57,7 @@ function validatePayload(payload: unknown): StreamStartPayload {
     assertK8sName('container', container);
   }
 
-  if (filters != null) validateFilters(filters);
-
   return payload as StreamStartPayload;
-}
-
-function validateFilters(filters: unknown) {
-  if (typeof filters !== 'object') throw new Error('filters debe ser un objeto');
-  const { level, search, excludePatterns } = filters as Record<string, unknown>;
-
-  if (level != null && level !== '') {
-    if (typeof level !== 'string' || parseLevel(level) === 'UNKNOWN') {
-      throw new Error(`Nivel inválido: ${String(level)}`);
-    }
-  }
-  if (search != null && typeof search !== 'string') throw new Error('search debe ser un string');
-  if (
-    excludePatterns != null &&
-    (!Array.isArray(excludePatterns) || excludePatterns.some((p) => typeof p !== 'string'))
-  ) {
-    throw new Error('excludePatterns debe ser un arreglo de strings');
-  }
 }
 
 function allowRequest(
@@ -136,11 +104,6 @@ export class LogGateway implements OnGatewayDisconnect {
     const session: StreamSession = { streamId, stopped: false, cleanups: [], pending: [] };
     this.sessions.set(client.id, session);
 
-    const filter: LogFilter = {};
-    if (request.filters?.level) filter.minLevel = parseLevel(request.filters.level);
-    if (request.filters?.search) filter.search = request.filters.search;
-    if (request.filters?.excludePatterns) filter.excludePatterns = request.filters.excludePatterns;
-
     const isLive = () => !session.stopped && client.connected;
 
     const flush = () => {
@@ -169,7 +132,6 @@ export class LogGateway implements OnGatewayDisconnect {
             onLine: (line, pod) => {
               if (!isLive()) return;
               const parsed = parseLogLine(line, pod);
-              if (!matchesFilter(parsed, filter)) return;
               session.pending.push(parsed);
               if (session.pending.length >= MAX_BATCH) flush();
               else session.timer ??= setTimeout(flush, FLUSH_INTERVAL_MS);

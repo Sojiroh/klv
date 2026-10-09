@@ -173,3 +173,6 @@ Desktop builds run automatically via `.github/workflows/build-desktop.yml` using
 - Context switches from the Web UI / desktop are in-memory only; only the CLI `use-context` writes `current-context` to the kubeconfig
 - The web client proxies `/api` and `/socket.io` to localhost:3000 during development
 - Barrel exports from `packages/core/src/index.ts` — always import from `@klv/core`, not deep paths
+- The query language lives once in `packages/core/src/query.ts` (pure, no Node imports). The React client imports it through the `@klv/query` alias (Vite `resolve.alias` + tsconfig `paths`), the web server via `@klv/core`. Queries over kubelet data are evaluated client-side; the history API receives the parsed AST. Rust re-implements the evaluator in `src-tauri/src/query.rs` with identical semantics — keep both in sync
+- The log parser (`log-parser.ts` ↔ `parser/log_parser.rs`) and the query evaluator (`query.ts` ↔ `query.rs`) must stay behaviorally identical between TypeScript and Rust
+- Local history: web `packages/web/src/history/` (built-in `node:sqlite`, Node >= 22.13, data in `KLV_DATA_DIR` or `~/.klv`), desktop `src-tauri/src/history/` (`rusqlite`, app data dir). Same API (`/api/history/*` ↔ `history_*` commands); collectors start with the server/app

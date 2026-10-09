@@ -152,6 +152,7 @@ program
   .option('-c, --container <name>', 'Container específico')
   .option('-t, --tail <lines>', 'Número de líneas', '100')
   .option('--since <seconds>', 'Logs de los últimos N segundos')
+  .option('--previous', 'Logs del contenedor anterior (tras un reinicio)', false)
   .option('--level <level>', `Filtrar por nivel mínimo (${VALID_LEVELS})`)
   .option('-s, --search <term>', 'Buscar texto en los logs')
   .option('--service <name>', 'Filtrar por nombre de servicio')
@@ -205,6 +206,7 @@ program
         container,
         tailLines: parseInt(cmdOpts.tail, 10),
         sinceSeconds: cmdOpts.since ? parseInt(cmdOpts.since, 10) : undefined,
+        previous: cmdOpts.previous,
       });
 
       spinner.stop();

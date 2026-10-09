@@ -5,8 +5,23 @@ import { statusStyles } from '../utils/log-utils';
 export interface ContainerGroup {
   container: string;
   podCount: number;
+  restarts: number;
   statuses: string[];
-  pods: { name: string; status: string; age: string }[];
+  pods: { name: string; status: string; age: string; restarts: number }[];
+}
+
+function RestartsBadge({ count }: { count: number }) {
+  return (
+    <span
+      className={`klv-badge border ${
+        count > 0
+          ? 'text-amber-400 bg-amber-400/10 border-amber-400/20'
+          : 'text-klv-text-muted bg-klv-elevated border-klv-border'
+      }`}
+    >
+      {count}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -30,8 +45,8 @@ export default function ContainerTable({ groups, namespace }: { groups: Containe
     );
   }
 
-  const toggle = (container: string) =>
-    setExpanded((prev) => ({ ...prev, [container]: !prev[container] }));
+  const toggle = (container: string, isOpen: boolean) =>
+    setExpanded((prev) => ({ ...prev, [container]: !isOpen }));
 
   return (
     <div className="klv-card overflow-hidden animate-slide-up">
@@ -42,6 +57,7 @@ export default function ContainerTable({ groups, namespace }: { groups: Containe
             <th className="py-3 px-4 text-left klv-section-label">Container</th>
             <th className="py-3 px-4 text-left klv-section-label">Pods</th>
             <th className="py-3 px-4 text-left klv-section-label">Status</th>
+            <th className="py-3 px-4 text-left klv-section-label">Restarts</th>
             <th className="py-3 px-4 text-right klv-section-label">Actions</th>
           </tr>
         </thead>
@@ -51,8 +67,8 @@ export default function ContainerTable({ groups, namespace }: { groups: Containe
               key={g.container}
               group={g}
               namespace={namespace}
-              isExpanded={!!expanded[g.container]}
-              onToggle={() => toggle(g.container)}
+              isExpanded={expanded[g.container] ?? g.restarts > 0}
+              onToggle={() => toggle(g.container, expanded[g.container] ?? g.restarts > 0)}
             />
           ))}
         </tbody>
@@ -103,6 +119,9 @@ function ContainerRow({
             ))}
           </div>
         </td>
+        <td className="py-3 px-4">
+          <RestartsBadge count={g.restarts} />
+        </td>
         <td className="py-3 px-4 text-right">
           <Link
             to={`/logs/${encodeURIComponent(namespace)}/container/${encodeURIComponent(g.container)}`}
@@ -130,6 +149,21 @@ function ContainerRow({
             <td className="py-2 px-4"></td>
             <td className="py-2 px-4">
               <StatusBadge status={pod.status} />
+            </td>
+            <td className="py-2 px-4">
+              {pod.restarts > 0 ? (
+                <div className="flex items-center gap-3">
+                  <RestartsBadge count={pod.restarts} />
+                  <Link
+                    to={`/logs/${encodeURIComponent(namespace)}/${encodeURIComponent(pod.name)}?container=${encodeURIComponent(g.container)}&previous=true`}
+                    className="text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+                  >
+                    Previous logs
+                  </Link>
+                </div>
+              ) : (
+                <RestartsBadge count={0} />
+              )}
             </td>
             <td className="py-2 px-4 text-right">
               <span className="text-xs text-klv-text-muted">{pod.age}</span>

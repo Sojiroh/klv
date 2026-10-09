@@ -40,6 +40,7 @@ pub struct LogQueryParams {
     pub search: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub previous: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -48,15 +49,6 @@ pub struct StreamStartPayload {
     pub namespace: String,
     pub pods: Vec<String>,
     pub container: Option<String>,
-    pub filters: Option<StreamFilters>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamFilters {
-    pub level: Option<String>,
-    pub search: Option<String>,
-    pub exclude_patterns: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +75,7 @@ pub struct LogsResponse {
 struct QueryOptions {
     tail: i64,
     since: Option<i64>,
+    previous: bool,
     filter: LogFilter,
     limit: Option<usize>,
     offset: usize,
@@ -92,6 +85,7 @@ impl QueryOptions {
     fn new(
         tail: Option<u64>,
         since: Option<u64>,
+        previous: Option<bool>,
         level: Option<&str>,
         search: Option<String>,
         limit: Option<usize>,
@@ -109,7 +103,8 @@ impl QueryOptions {
             // MAX_TAIL cabe de sobra en i64
             tail: tail.unwrap_or(DEFAULT_TAIL).min(MAX_TAIL) as i64,
             since,
-            filter: build_filter(parse_min_level(level)?, search, None),
+            previous: previous.unwrap_or(false),
+            filter: build_filter(parse_min_level(level)?, search),
             limit: limit.map(|l| l.min(MAX_LIMIT)),
             offset: offset.unwrap_or(0),
         })
@@ -129,18 +124,13 @@ fn parse_min_level(level: Option<&str>) -> Result<Option<LogLevel>, KlvError> {
     }
 }
 
-fn build_filter(
-    min_level: Option<LogLevel>,
-    search: Option<String>,
-    exclude_patterns: Option<Vec<String>>,
-) -> LogFilter {
+fn build_filter(min_level: Option<LogLevel>, search: Option<String>) -> LogFilter {
     LogFilter {
         level: None,
         min_level,
         search,
         trace_id: None,
         service: None,
-        exclude_patterns,
     }
 }
 
@@ -175,6 +165,7 @@ async fn fetch_pod_logs(
         tail_lines: Some(options.tail),
         since_seconds: options.since,
         timestamps: true,
+        previous: options.previous,
         ..Default::default()
     };
     let fetch_error = |detail: String| {
@@ -215,6 +206,7 @@ pub async fn get_pod_logs(
     let options = QueryOptions::new(
         params.tail,
         params.since,
+        params.previous,
         params.level.as_deref(),
         params.search,
         params.limit,
@@ -238,6 +230,7 @@ pub async fn get_container_logs(
     container: String,
     tail: Option<u64>,
     since: Option<u64>,
+    previous: Option<bool>,
     level: Option<String>,
     search: Option<String>,
     limit: Option<usize>,
@@ -245,7 +238,7 @@ pub async fn get_container_logs(
 ) -> Result<LogsResponse, KlvError> {
     validate_name(NameKind::Namespace, &namespace)?;
     validate_name(NameKind::Container, &container)?;
-    let options = QueryOptions::new(tail, since, level.as_deref(), search, limit, offset)?;
+    let options = QueryOptions::new(tail, since, previous, level.as_deref(), search, limit, offset)?;
 
     let client = state.get_client().await?;
     let pods_api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -428,7 +421,6 @@ async fn read_pod_stream(
     namespace: String,
     pod: String,
     container: Option<String>,
-    filter: Arc<LogFilter>,
     tx: mpsc::Sender<StreamEvent>,
 ) {
     let pods_api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -465,9 +457,7 @@ async fn read_pod_stream(
                     continue;
                 }
                 let parsed = parse_log_line(line, Some(&pod));
-                if matches_filter(&parsed, &filter)
-                    && tx.send(StreamEvent::Log(Box::new(parsed))).await.is_err()
-                {
+                if tx.send(StreamEvent::Log(Box::new(parsed))).await.is_err() {
                     return;
                 }
             }
@@ -480,7 +470,7 @@ async fn read_pod_stream(
     }
 }
 
-fn validate_stream_payload(payload: &StreamStartPayload) -> Result<LogFilter, KlvError> {
+fn validate_stream_payload(payload: &StreamStartPayload) -> Result<(), KlvError> {
     validate_name(NameKind::Namespace, &payload.namespace)?;
     if payload.pods.is_empty() || payload.pods.len() > STREAM_MAX_PODS {
         return Err(KlvError::new(format!(
@@ -493,14 +483,7 @@ fn validate_stream_payload(payload: &StreamStartPayload) -> Result<LogFilter, Kl
     if let Some(container) = &payload.container {
         validate_name(NameKind::Container, container)?;
     }
-
-    let filters = payload.filters.as_ref();
-    let min_level = parse_min_level(filters.and_then(|f| f.level.as_deref()))?;
-    Ok(build_filter(
-        min_level,
-        filters.and_then(|f| f.search.clone()),
-        filters.and_then(|f| f.exclude_patterns.clone()),
-    ))
+    Ok(())
 }
 
 #[command]
@@ -513,20 +496,16 @@ pub async fn stream_start(
     // Un único conjunto de streams activo: cualquier inicio detiene los anteriores
     state.stop_all_streams().await;
 
-    let filter = match validate_stream_payload(&payload) {
-        Ok(filter) => Arc::new(filter),
-        Err(e) => {
-            emit_stream_error(&app, &stream_id, None, &e.message);
-            return Ok(());
-        }
-    };
+    if let Err(e) = validate_stream_payload(&payload) {
+        emit_stream_error(&app, &stream_id, None, &e.message);
+        return Ok(());
+    }
     let client = state.get_client().await?;
 
     let StreamStartPayload {
         namespace,
         pods,
         container,
-        ..
     } = payload;
     let id = stream_id.clone();
 
@@ -541,7 +520,6 @@ pub async fn stream_start(
                     namespace.clone(),
                     pod,
                     container.clone(),
-                    filter.clone(),
                     tx.clone(),
                 )));
             }

@@ -13,6 +13,8 @@ export interface PodInfo {
   containers: string[];
   labels: Record<string, string>;
   age: string;
+  // Nombre de contenedor -> reinicios (solo contenedores con estado)
+  restarts: Record<string, number>;
 }
 
 export interface LogOptions {
@@ -22,6 +24,9 @@ export interface LogOptions {
   follow?: boolean;
   tailLines?: number;
   sinceSeconds?: number;
+  // RFC3339; con streamLogs reemplaza a tailLines
+  sinceTime?: string;
+  previous?: boolean;
   timestamps?: boolean;
 }
 
@@ -29,6 +34,14 @@ export interface StreamHandlers {
   onLine: (line: string, podName: string) => void;
   onError: (err: Error, podName: string) => void;
   onEnd?: (podName: string) => void;
+}
+
+export type PodWatchEventType = 'ADDED' | 'MODIFIED' | 'DELETED';
+
+export interface PodWatchHandlers {
+  onEvent: (type: PodWatchEventType, pod: PodInfo) => void;
+  // Se invoca una sola vez: ante un error o al cerrarse el watch
+  onError: (err: Error) => void;
 }
 
 // Mensaje legible del Status de Kubernetes presente en el cuerpo de la respuesta
@@ -207,14 +220,7 @@ export class KubeClient {
     assertK8sName('namespace', namespace);
     try {
       const res = await this.coreApi.listNamespacedPod({ namespace, labelSelector });
-      return (res.items ?? []).map((pod) => ({
-        name: pod.metadata?.name ?? '',
-        namespace: pod.metadata?.namespace ?? namespace,
-        status: pod.status?.phase ?? 'Unknown',
-        containers: (pod.spec?.containers ?? []).map((c) => c.name),
-        labels: pod.metadata?.labels ?? {},
-        age: this.getAge(pod.metadata?.creationTimestamp),
-      }));
+      return (res.items ?? []).map((pod) => this.toPodInfo(pod, namespace));
     } catch (err) {
       throw toKubeError(err, `Error al obtener pods del namespace "${namespace}"`);
     }
@@ -252,18 +258,106 @@ export class KubeClient {
     assertK8sName('pod', options.podName);
     if (options.container) assertK8sName('container', options.container);
     try {
+      // readNamespacedPodLog no expone sinceTime: esa consulta va por k8s.Log
+      if (options.sinceTime) return await this.readLogsSince(options, options.sinceTime);
       const res = await this.coreApi.readNamespacedPodLog({
         name: options.podName,
         namespace: options.namespace,
         container: options.container,
         tailLines: options.tailLines ?? 100,
         sinceSeconds: options.sinceSeconds,
+        previous: options.previous,
         timestamps: options.timestamps,
       });
       return typeof res === 'string' ? res : String(res);
     } catch (err) {
       throw toKubeError(err, `Error al obtener logs del pod "${options.podName}"`);
     }
+  }
+
+  // Lectura completa (sin follow) desde sinceTime; solo se limita con tailLines si se indicó expresamente
+  private async readLogsSince(options: LogOptions, sinceTime: string): Promise<string> {
+    const stream = new PassThrough();
+    stream.setEncoding('utf8');
+    const chunks: string[] = [];
+    const finished = new Promise<string>((resolve, reject) => {
+      stream.on('data', (chunk: string) => chunks.push(chunk));
+      stream.on('end', () => resolve(chunks.join('')));
+      stream.on('error', reject);
+      // Log.log hace body.pipe(stream), que no propaga los errores del origen
+      stream.on('pipe', (source) => source.on('error', reject));
+    });
+    await new k8s.Log(this.kc).log(
+      encodeURIComponent(options.namespace),
+      encodeURIComponent(options.podName),
+      options.container ?? '',
+      stream,
+      {
+        tailLines: options.tailLines,
+        previous: options.previous,
+        sinceTime,
+        timestamps: options.timestamps,
+      }
+    );
+    return finished;
+  }
+
+  // Lista los pods (ADDED por cada uno) y observa cambios desde esa versión. Nunca rechaza: los fallos
+  // y el cierre del watch van a onError una sola vez. El cleanup devuelto aborta el watch y silencia los handlers.
+  async watchPods(
+    namespace: string,
+    labelSelector: string | undefined,
+    handlers: PodWatchHandlers
+  ): Promise<() => void> {
+    let controller: AbortController | undefined;
+    let active = true;
+
+    const teardown = (): void => {
+      active = false;
+      controller?.abort();
+    };
+
+    const fail = (err: Error): void => {
+      if (!active) return;
+      teardown();
+      handlers.onError(err);
+    };
+
+    try {
+      assertK8sName('namespace', namespace);
+      const list = await this.coreApi.listNamespacedPod({ namespace, labelSelector });
+      if (!active) return teardown;
+      for (const pod of list.items ?? []) {
+        handlers.onEvent('ADDED', this.toPodInfo(pod, namespace));
+        if (!active) return teardown;
+      }
+
+      controller = await new k8s.Watch(this.kc).watch(
+        `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`,
+        { labelSelector, resourceVersion: list.metadata?.resourceVersion },
+        (phase, object) => {
+          if (!active) return;
+          if (phase === 'ADDED' || phase === 'MODIFIED' || phase === 'DELETED') {
+            handlers.onEvent(phase, this.toPodInfo(object as k8s.V1Pod, namespace));
+          } else if (phase === 'ERROR') {
+            const detail = statusMessage(object) ?? 'error desconocido';
+            fail(new KubeError(`Error en el watch de pods del namespace "${namespace}": ${detail}`));
+          }
+        },
+        (err) => {
+          fail(
+            err
+              ? toKubeError(err, `Error en el watch de pods del namespace "${namespace}"`)
+              : new KubeError(`El watch de pods del namespace "${namespace}" se cerró`)
+          );
+        }
+      );
+      if (!active) controller.abort();
+    } catch (err) {
+      fail(toKubeError(err, `Error al observar pods del namespace "${namespace}"`));
+    }
+
+    return teardown;
   }
 
   // Nunca rechaza: los fallos van a onError. El cleanup devuelto aborta la petición HTTP y silencia los handlers.
@@ -332,7 +426,8 @@ export class KubeClient {
         stream,
         {
           follow: true,
-          tailLines: options.tailLines ?? 50,
+          tailLines: options.sinceTime ? undefined : (options.tailLines ?? 50),
+          sinceTime: options.sinceTime,
           timestamps: options.timestamps,
         }
       );
@@ -342,6 +437,23 @@ export class KubeClient {
     }
 
     return teardown;
+  }
+
+  // Mismos datos para listados y eventos de watch
+  private toPodInfo(pod: k8s.V1Pod, namespace: string): PodInfo {
+    const restarts: Record<string, number> = {};
+    for (const status of pod.status?.containerStatuses ?? []) {
+      restarts[status.name] = status.restartCount;
+    }
+    return {
+      name: pod.metadata?.name ?? '',
+      namespace: pod.metadata?.namespace ?? namespace,
+      status: pod.status?.phase ?? 'Unknown',
+      containers: (pod.spec?.containers ?? []).map((c) => c.name),
+      labels: pod.metadata?.labels ?? {},
+      age: this.getAge(pod.metadata?.creationTimestamp),
+      restarts,
+    };
   }
 
   private getAge(timestamp?: Date): string {

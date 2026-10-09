@@ -16,6 +16,7 @@ pub struct PodInfo {
     pub containers: Vec<String>,
     pub labels: BTreeMap<String, String>,
     pub age: String,
+    pub restarts: BTreeMap<String, i32>,
 }
 
 #[command]
@@ -61,6 +62,15 @@ pub async fn get_pods(
                     .unwrap_or_default(),
                 labels: meta.labels.unwrap_or_default(),
                 age: get_age(meta.creation_timestamp.as_ref()),
+                restarts: status
+                    .and_then(|s| s.container_statuses.as_ref())
+                    .map(|statuses| {
+                        statuses
+                            .iter()
+                            .map(|cs| (cs.name.clone(), cs.restart_count))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect();

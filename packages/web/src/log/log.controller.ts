@@ -20,6 +20,14 @@ function parseUint(value: unknown, name: string, { min = 0, max }: { min?: numbe
   return max != null ? Math.min(n, max) : n;
 }
 
+function parseBoolean(value: unknown, name: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'true' && value !== 'false') {
+    throw new BadRequestException(`${name} debe ser true o false`);
+  }
+  return value === 'true';
+}
+
 function parseMinLevel(value: unknown): LogLevel | undefined {
   if (value === undefined) return undefined;
   const level = typeof value === 'string' ? parseLevel(value) : 'UNKNOWN';
@@ -41,6 +49,7 @@ export class LogController {
     @Param('container') container: string,
     @Query('tail') tail?: string,
     @Query('since') since?: string,
+    @Query('previous') previous?: string,
     @Query('level') level?: string,
     @Query('search') search?: string,
     @Query('limit') limit?: string,
@@ -51,6 +60,7 @@ export class LogController {
       container,
       tail: parseUint(tail, 'tail', { max: MAX_TAIL }),
       since: parseUint(since, 'since', { min: 1 }),
+      previous: parseBoolean(previous, 'previous'),
       level: parseMinLevel(level),
       search,
       limit: parseUint(limit, 'limit', { max: MAX_LIMIT }),
@@ -65,6 +75,7 @@ export class LogController {
     @Query('container') container?: string,
     @Query('tail') tail?: string,
     @Query('since') since?: string,
+    @Query('previous') previous?: string,
     @Query('level') level?: string,
     @Query('search') search?: string,
     @Query('limit') limit?: string,
@@ -76,6 +87,7 @@ export class LogController {
       container,
       tail: parseUint(tail, 'tail', { max: MAX_TAIL }),
       since: parseUint(since, 'since', { min: 1 }),
+      previous: parseBoolean(previous, 'previous'),
       level: parseMinLevel(level),
       search,
       limit: parseUint(limit, 'limit', { max: MAX_LIMIT }),

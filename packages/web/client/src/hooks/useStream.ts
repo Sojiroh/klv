@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { Socket } from 'socket.io-client';
 import type {
   ParsedLog,
   StreamEndEvent,
@@ -17,32 +18,71 @@ import {
 } from '../lib/tauri';
 import { errorMessage } from '../lib/api';
 
-const MAX_LOGS = 2000;
 const MAX_NOTICES = 100;
+const FLUSH_INTERVAL_MS = 100;
 const IS_TAURI = isTauri();
 
-function appendCapped(prev: ParsedLog[], batch: ParsedLog[]): ParsedLog[] {
-  const next = prev.concat(batch);
-  return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
+interface StreamScope {
+  namespace: string;
+  container?: string;
 }
 
 function newStreamId(): string {
   return `stream-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function useStream() {
+export function useStream({ bufferSize }: { bufferSize: number }) {
   const [logs, setLogs] = useState<ParsedLog[]>([]);
+  const [dropped, setDropped] = useState(0);
   const [notices, setNotices] = useState<StreamNotice[]>([]);
   const [connected, setConnected] = useState(IS_TAURI);
   const [streaming, setStreaming] = useState(false);
   const streamIdRef = useRef<string | null>(null);
   const activePodsRef = useRef<Set<string>>(new Set());
-  const socketRef = useRef<ReturnType<typeof import('socket.io-client').io> | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const listenersReady = useRef<Promise<void> | null>(null);
+  const scopeRef = useRef<StreamScope | null>(null);
+  const bufferSizeRef = useRef(bufferSize);
+  const logsRef = useRef<ParsedLog[]>([]);
+  const pendingRef = useRef<ParsedLog[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  bufferSizeRef.current = bufferSize;
 
   const addNotice = useCallback((notice: StreamNotice) => {
     setNotices((prev) => [...prev, notice].slice(-MAX_NOTICES));
   }, []);
+
+  /** Appends `batch` to the buffer, keeping the newest `bufferSize` lines and counting the discarded ones. */
+  const commit = useCallback((batch: ParsedLog[]) => {
+    const size = bufferSizeRef.current;
+    const combined = batch.length > 0 ? logsRef.current.concat(batch) : logsRef.current;
+    const overflow = combined.length - size;
+    if (overflow <= 0 && batch.length === 0) return;
+    const next = overflow > 0 ? combined.slice(overflow) : combined;
+    logsRef.current = next;
+    setLogs(next);
+    if (overflow > 0) setDropped((prev) => prev + overflow);
+  }, []);
+
+  const cancelFlush = useCallback(() => {
+    if (flushTimerRef.current !== null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    pendingRef.current = [];
+  }, []);
+
+  const resetBuffer = useCallback(() => {
+    cancelFlush();
+    logsRef.current = [];
+    setLogs([]);
+    setDropped(0);
+  }, [cancelFlush]);
+
+  useEffect(() => {
+    commit([]);
+  }, [bufferSize, commit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,9 +93,31 @@ export function useStream() {
       setStreaming(false);
     };
 
+    const flush = () => {
+      flushTimerRef.current = null;
+      const batch = pendingRef.current;
+      pendingRef.current = [];
+      commit(batch);
+    };
+
     const onLog = (event: StreamLogEvent) => {
       if (event.streamId !== streamIdRef.current) return;
-      setLogs((prev) => appendCapped(prev, event.logs));
+      const scope = scopeRef.current;
+      const pending = pendingRef.current;
+      for (const log of event.logs) {
+        pending.push(
+          scope
+            ? {
+                ...log,
+                namespace: scope.namespace,
+                ...(scope.container ? { container: scope.container } : {}),
+              }
+            : log,
+        );
+      }
+      if (flushTimerRef.current === null) {
+        flushTimerRef.current = setTimeout(flush, FLUSH_INTERVAL_MS);
+      }
     };
 
     const onError = (event: StreamErrorEvent) => {
@@ -90,6 +152,7 @@ export function useStream() {
 
       return () => {
         cancelled = true;
+        cancelFlush();
         unlisteners.forEach((fn) => fn());
         const id = streamIdRef.current;
         if (id) {
@@ -119,11 +182,12 @@ export function useStream() {
 
     return () => {
       cancelled = true;
+      cancelFlush();
       streamIdRef.current = null;
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
-  }, [addNotice]);
+  }, [addNotice, cancelFlush, commit]);
 
   const start = useCallback(async (options: StreamOptions) => {
     if (options.pods.length === 0) return;
@@ -131,7 +195,8 @@ export function useStream() {
     const id = newStreamId();
     streamIdRef.current = id;
     activePodsRef.current = new Set(options.pods);
-    setLogs([]);
+    scopeRef.current = { namespace: options.namespace, container: options.container };
+    resetBuffer();
     setNotices([]);
     setStreaming(true);
 
@@ -154,7 +219,7 @@ export function useStream() {
         message: errorMessage(err),
       });
     }
-  }, [addNotice]);
+  }, [addNotice, resetBuffer]);
 
   const stop = useCallback(() => {
     const id = streamIdRef.current;
@@ -169,9 +234,9 @@ export function useStream() {
   }, []);
 
   const clear = useCallback(() => {
-    setLogs([]);
+    resetBuffer();
     setNotices([]);
-  }, []);
+  }, [resetBuffer]);
 
-  return { logs, notices, connected, streaming, start, stop, clear };
+  return { logs, dropped, notices, connected, streaming, start, stop, clear };
 }

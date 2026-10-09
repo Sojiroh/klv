@@ -4,11 +4,13 @@ import Dashboard from './pages/Dashboard';
 import Logs from './pages/Logs';
 import Stream from './pages/Stream';
 import Search from './pages/Search';
+import History from './pages/History';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '⬡' },
   { path: '/stream', label: 'Stream', icon: '◉' },
   { path: '/search', label: 'Search', icon: '⌕' },
+  { path: '/history', label: 'History', icon: '◷' },
 ];
 
 export default function App() {
@@ -59,7 +61,7 @@ export default function App() {
       </nav>
 
       {/* Main content */}
-      <main className="px-6 py-6 max-w-[1440px] mx-auto animate-fade-in">
+      <main className="px-6 py-6 max-w-[1680px] mx-auto animate-fade-in">
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Dashboard />} />
@@ -67,6 +69,7 @@ export default function App() {
             <Route path="/logs/:namespace/:pod" element={<Logs />} />
             <Route path="/stream" element={<Stream />} />
             <Route path="/search" element={<Search />} />
+            <Route path="/history" element={<History />} />
           </Routes>
         </ErrorBoundary>
       </main>

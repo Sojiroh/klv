@@ -1,7 +1,8 @@
 import { isTauri, invokeApi } from './tauri';
 
 interface RequestOptions {
-  method?: 'GET' | 'PUT';
+  method?: 'GET' | 'PUT' | 'POST';
+  body?: unknown;
   signal?: AbortSignal;
 }
 
@@ -29,17 +30,23 @@ async function responseError(res: Response): Promise<Error> {
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', signal } = options;
+  const { method = 'GET', body, signal } = options;
 
   if (isTauri()) {
     try {
-      return await invokeApi<T>(path, { method });
+      return await invokeApi<T>(path, { method, body });
     } catch (err) {
       throw new Error(errorMessage(err));
     }
   }
 
-  const res = await fetch(path, { method, signal });
+  const res = await fetch(path, {
+    method,
+    signal,
+    ...(body === undefined
+      ? {}
+      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  });
   if (!res.ok) throw await responseError(res);
   return (await res.json()) as T;
 }

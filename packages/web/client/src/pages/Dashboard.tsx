@@ -18,9 +18,11 @@ export default function Dashboard() {
   const groups = Object.values(
     (pods ?? []).reduce<Record<string, ContainerGroup>>((acc, pod) => {
       for (const c of pod.containers) {
-        if (!acc[c]) acc[c] = { container: c, podCount: 0, statuses: [], pods: [] };
+        if (!acc[c]) acc[c] = { container: c, podCount: 0, restarts: 0, statuses: [], pods: [] };
+        const restarts = pod.restarts[c] ?? 0;
         acc[c].podCount++;
-        acc[c].pods.push({ name: pod.name, status: pod.status, age: pod.age });
+        acc[c].restarts += restarts;
+        acc[c].pods.push({ name: pod.name, status: pod.status, age: pod.age, restarts });
         if (!acc[c].statuses.includes(pod.status)) acc[c].statuses.push(pod.status);
       }
       return acc;

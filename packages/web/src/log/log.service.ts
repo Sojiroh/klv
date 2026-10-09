@@ -31,6 +31,7 @@ export class LogService {
     container?: string;
     tail?: number;
     since?: number;
+    previous?: boolean;
     level?: LogLevel;
     search?: string;
     limit?: number;
@@ -42,6 +43,7 @@ export class LogService {
       container: options.container,
       tailLines: options.tail ?? 100,
       sinceSeconds: options.since,
+      previous: options.previous,
       timestamps: true,
     });
 
@@ -70,6 +72,7 @@ export class LogService {
     container: string;
     tail?: number;
     since?: number;
+    previous?: boolean;
     level?: LogLevel;
     search?: string;
     limit?: number;
@@ -94,6 +97,7 @@ export class LogService {
             container: options.container,
             tailLines: tailPerPod,
             sinceSeconds: options.since,
+            previous: options.previous,
             timestamps: true,
           });
           const lines = raw.split('\n').filter((l) => l.trim());

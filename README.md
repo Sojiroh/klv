@@ -23,7 +23,7 @@ packages/
 
 ## Instalacion
 
-Requiere Node.js `>=20.19 <21` o `>=22.12` (el servidor NestJS en CommonJS carga `@klv/core`, que es ESM, via `require()`).
+Requiere Node.js `>=22.13` (el servidor usa `node:sqlite` para el historial local, y carga `@klv/core`, que es ESM, via `require()`).
 
 ```bash
 git clone https://github.com/Sojiroh/klv.git
@@ -54,13 +54,40 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 | `HOST` | `127.0.0.1` | Interfaz donde escucha el servidor. Usa `0.0.0.0` solo si de verdad quieres exponerlo en la red |
 | `PORT` | `3000` | Puerto HTTP/WebSocket |
 | `KLV_ALLOWED_ORIGINS` | — | Origenes extra (separados por coma) aceptados por el WebSocket, ademas de `localhost`/`127.0.0.1` en `PORT` y el dev server `:5173` |
+| `KLV_DATA_DIR` | `~/.klv` | Carpeta donde se guarda el historial local (`history.db`) |
 
 ### Paginas
 
-- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status y link a logs agregados
-- **Logs** — Visor de logs con filtros por nivel y busqueda, toggle raw JSON, panel de detalle, soporte para logs por pod y por container (agregados multi-pod)
-- **Stream** — Streaming en tiempo real via WebSocket, seleccion de pods, auto-scroll, pause/resume
-- **Search** — Busqueda full-text en todos los pods de un namespace
+- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status, reinicios, link a logs agregados y a los logs del contenedor anterior
+- **Logs** — Log Explorer de un pod o de un container agregado (multi-pod)
+- **Search** — Log Explorer sobre todos los pods de un namespace (opcionalmente filtrado por container)
+- **Stream** — Live tail via WebSocket con buffer configurable (2k–50k lineas) y el mismo query language, facetas, columnas y export sobre el buffer
+- **History** — Log Explorer sobre el historial local guardado por el recolector, y configuracion de targets, retencion y estado del recolector
+
+### Log Explorer
+
+- **Query language** estilo Datadog, compartible via URL (`?q=...&range=1h&cols=...`)
+- **Facetas** con conteos por level, pod, container, service y atributos JSON; click para incluir, alt-click para excluir
+- **Histograma** de volumen por nivel con selector de rango (15m, 1h, 4h, 24h, 7d, 30d o custom) y zoom arrastrando
+- **Columnas configurables** (incluye atributos `@campo`) y **export** a CSV/JSON
+- **Patrones**: agrupa mensajes similares (numeros, IDs, UUIDs, IPs, timestamps normalizados) con conteo por nivel
+- **Ver en contexto** (lineas alrededor en el mismo pod) y navegacion por `traceId`
+- **Logs del contenedor anterior** (`previous`) para diagnosticar CrashLoopBackOff
+
+Sintaxis del query:
+
+| Ejemplo | Significado |
+|---------|-------------|
+| `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en mensaje, error, stack, service, trace y atributos |
+| `time*out` | Comodin |
+| `level:error`, `level:>=warn` | Nivel exacto o minimo (alias `status:`) |
+| `service:api-*`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe) |
+| `@http.status:500`, `@user.id:*`, `@duration:>500`, `@http.status:[500 TO 599]` | Atributos JSON (ruta con puntos), comparaciones y rangos numericos |
+| `-healthcheck`, `NOT service:api`, `(a OR b) AND c` | Negacion, `AND` implicito, `OR` y parentesis |
+
+### Historial local (retencion)
+
+El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + container y/o label selector opcionales), reconecta tras reinicios y rollouts, y guarda los logs en SQLite (`$KLV_DATA_DIR/history.db`). La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB). Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
 
 ### API REST
 
@@ -71,8 +98,14 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 | `GET /api/namespaces` | Listar namespaces |
 | `GET /api/pods/:namespace` | Listar pods |
 | `GET /api/deployments/:namespace` | Listar deployments |
-| `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`) |
-| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`) |
+| `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
+| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
+| `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector y retencion |
+| `GET /api/history/status` | Estadisticas del historial y estado de cada target |
+| `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
+| `POST /api/history/clear` | Borrar el historial |
+
+Los `POST`/`PUT` de `/api/history` requieren `Content-Type: application/json`.
 
 Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 502 si falla el apiserver).
 
@@ -80,7 +113,7 @@ Los errores responden `{ statusCode, message }` con el status real (400 parametr
 
 Eventos Socket.IO para streaming en tiempo real:
 
-- `stream:start` — Iniciar stream (payload: `{ streamId, namespace, pods[], container?, filters? }`); detiene cualquier stream previo del mismo socket
+- `stream:start` — Iniciar stream (payload: `{ streamId, namespace, pods[], container? }`); detiene cualquier stream previo del mismo socket. El filtrado se hace en el cliente con el query language
 - `stream:stop` — Detener stream
 - `stream:log` — Lote de logs parseados `{ streamId, logs[] }` (servidor -> cliente, cada ~100 ms)
 - `stream:error` — Error de stream `{ streamId, podName?, error }` (servidor -> cliente)
@@ -104,7 +137,8 @@ npm run build:desktop
 
 - **Frontend**: Mismo React SPA que la web, con una capa adaptadora (`tauri.ts`) que detecta si corre en Tauri (`window.__TAURI_INTERNALS__`) y redirige las llamadas API al backend Rust via `invoke()`
 - **Backend**: Comandos Tauri en Rust que usan `kube-rs` directamente, con streaming via eventos Tauri
-- **Log parser**: Reimplementado en Rust (`log_parser.rs`, `log_filter.rs`) con la misma logica que el parser de TypeScript
+- **Log parser y query language**: Reimplementados en Rust (`log_parser.rs`, `query.rs`) con la misma semantica que `@klv/core`
+- **Historial local**: mismo recolector y API que la web, con `rusqlite`, en la carpeta de datos de la app
 
 ### Comandos Tauri
 
@@ -119,6 +153,11 @@ npm run build:desktop
 | `get_container_logs` | Logs agregados por container |
 | `stream_start` | Iniciar stream en tiempo real |
 | `stream_stop` | Detener stream |
+| `history_get_config` / `history_set_config` | Targets del recolector y retencion |
+| `history_status` | Estadisticas y estado del recolector |
+| `history_query` | Consultar el historial local |
+| `history_clear` | Borrar el historial |
+| `export_save` | Guardar un export (CSV/JSON) con el dialogo nativo |
 
 ## CLI
 
@@ -208,6 +247,7 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 | `--compact` | Formato compacto |
 | `--no-timestamp` | Ocultar timestamps |
 | `--raw` | Mostrar JSON sin parsear (pretty-printed) |
+| `--previous` | Logs del contenedor anterior (antes del ultimo reinicio) |
 
 ## Parser de logs
 
