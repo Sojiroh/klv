@@ -36,6 +36,8 @@ const FIXED_FACETS: { field: string; label: string; read: (log: QueryableLog) =>
   { field: 'container', label: 'Container', read: (log) => log.container },
   { field: 'namespace', label: 'Namespace', read: (log) => log.namespace },
   { field: 'service', label: 'Service', read: (log) => log.service },
+  { field: 'env', label: 'Env', read: (log) => log.env },
+  { field: 'version', label: 'Version', read: (log) => log.version },
 ];
 
 function bump(tally: Tally, value: string): void {

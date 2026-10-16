@@ -18,6 +18,8 @@ const MIN_FTS_TERM = 3;
 const RESERVED_FIELDS: Record<string, string | undefined> = {
   level: 'level',
   service: 'service',
+  env: 'env',
+  version: 'version',
   pod: 'pod',
   container: 'container',
   namespace: 'namespace',
@@ -29,7 +31,7 @@ const RESERVED_FIELDS: Record<string, string | undefined> = {
 };
 
 const COLUMNS = `id, context, namespace, pod, container, ts_us, raw, is_json, timestamp, k8s_timestamp, level,
-  message, service, trace_id, span_id, caller, error, stack_trace, extra`;
+  message, service, env, version, trace_id, span_id, caller, error, stack_trace, extra`;
 
 interface Position {
   tsUs: number;
@@ -240,6 +242,8 @@ function rowToLog(row: Record<string, SQLOutputValue>): HistoryLog {
   const text = (key: string): string | undefined => (typeof row[key] === 'string' ? row[key] as string : undefined);
   const timestamp = text('timestamp');
   const service = text('service');
+  const env = text('env');
+  const version = text('version');
   const traceId = text('trace_id');
   const spanId = text('span_id');
   const caller = text('caller');
@@ -253,6 +257,8 @@ function rowToLog(row: Record<string, SQLOutputValue>): HistoryLog {
     level: row.level as LogLevel,
     message: row.message as string,
     ...(service !== undefined && { service }),
+    ...(env !== undefined && { env }),
+    ...(version !== undefined && { version }),
     ...(traceId !== undefined && { traceId }),
     ...(spanId !== undefined && { spanId }),
     ...(caller !== undefined && { caller }),

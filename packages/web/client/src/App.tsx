@@ -21,15 +21,15 @@ export default function App() {
   return (
     <div className="min-h-screen noise-bg">
       {/* Top nav */}
-      <nav className="sticky top-0 z-30 bg-klv-base/80 backdrop-blur-xl border-b border-klv-border">
+      <nav className="sticky top-0 z-30 bg-klv-nav border-b border-klv-nav-hover shadow-sm shadow-slate-900/10">
         <div className="px-6 py-3 flex items-center gap-1">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-2.5 mr-8 group">
-            <span className="text-xl font-display font-extrabold tracking-tight text-klv-accent
+            <span className="text-xl font-display font-extrabold tracking-tight text-white
                            group-hover:text-klv-accent-hover transition-colors">
               KLV
             </span>
-            <span className="text-[10px] font-mono text-klv-text-muted tracking-wider hidden sm:block">
+            <span className="text-[10px] font-mono text-white/50 tracking-wider hidden sm:block">
               KUBE LOG VIEWER
             </span>
           </Link>
@@ -44,15 +44,15 @@ export default function App() {
                   relative px-3 py-1.5 text-sm font-body font-medium rounded-lg
                   transition-all duration-200
                   ${isActive(item.path)
-                    ? 'text-klv-text bg-klv-elevated'
-                    : 'text-klv-text-muted hover:text-klv-text-secondary hover:bg-klv-surface'
+                    ? 'text-white bg-white/10'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
                   }
                 `}
               >
                 <span className="mr-1.5 text-xs opacity-60">{item.icon}</span>
                 {item.label}
                 {isActive(item.path) && (
-                  <span className="absolute -bottom-[13px] left-1/2 -translate-x-1/2 w-6 h-0.5 bg-klv-accent rounded-full" />
+                  <span className="absolute -bottom-[13px] left-1/2 -translate-x-1/2 w-6 h-0.5 bg-klv-accent-hover rounded-full" />
                 )}
               </Link>
             ))}

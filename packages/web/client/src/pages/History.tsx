@@ -235,7 +235,7 @@ export default function History() {
               current && (current.truncated || current.nextCursor) ? (
                 <div
                   className={`klv-card px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs ${
-                    current.truncated ? 'border-amber-500/30 bg-amber-500/5 text-amber-400' : 'text-klv-text-muted'
+                    current.truncated ? 'border-amber-200 bg-amber-50 text-amber-700' : 'text-klv-text-muted'
                   }`}
                 >
                   <span className="font-mono">

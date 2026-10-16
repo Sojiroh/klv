@@ -79,7 +79,7 @@ export default function FacetsPanel({ facets, query, maxHeight, onToggle }: Prop
                                     }`}
                       >
                         <span
-                          className={`absolute inset-y-0 left-0 ${state === 'exclude' ? 'bg-red-500/10' : 'bg-klv-accent/10'}`}
+                          className={`absolute inset-y-0 left-0 ${state === 'exclude' ? 'bg-red-50' : 'bg-klv-accent/15'}`}
                           style={{ width: `${pct}%` }}
                         />
                         <span
@@ -87,7 +87,7 @@ export default function FacetsPanel({ facets, query, maxHeight, onToggle }: Prop
                             state === 'include'
                               ? 'text-klv-accent'
                               : state === 'exclude'
-                                ? 'text-red-400 line-through'
+                                ? 'text-red-600 line-through'
                                 : (levelColor ?? 'text-klv-text-secondary')
                           }`}
                         >
@@ -102,7 +102,7 @@ export default function FacetsPanel({ facets, query, maxHeight, onToggle }: Prop
                         onClick={() => onToggle(clause, 'exclude')}
                         title="Exclude"
                         className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded
-                                   text-klv-text-muted opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                   text-klv-text-muted opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 transition-all"
                       >
                         <MinusIcon className="w-3 h-3" />
                       </button>

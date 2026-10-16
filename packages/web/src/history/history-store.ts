@@ -61,11 +61,16 @@ const MIGRATIONS: string[] = [
     value TEXT NOT NULL
   ) WITHOUT ROWID;
   `,
+  `
+  ALTER TABLE logs ADD COLUMN env TEXT;
+  ALTER TABLE logs ADD COLUMN version TEXT;
+  `,
 ];
 
 const INSERT_COLUMNS = [
   'context', 'namespace', 'pod', 'container', 'ts_us', 'raw_hash', 'raw', 'is_json', 'timestamp',
-  'k8s_timestamp', 'level', 'message', 'service', 'trace_id', 'span_id', 'caller', 'error', 'stack_trace', 'extra',
+  'k8s_timestamp', 'level', 'message', 'service', 'env', 'version', 'trace_id', 'span_id', 'caller', 'error',
+  'stack_trace', 'extra',
 ];
 
 export interface LogScope {
@@ -82,11 +87,12 @@ interface PendingRow {
 
 type Row = Record<string, SQLOutputValue>;
 
-// Texto sobre el que se evalúan las búsquedas de texto libre (Q1); el índice FTS contiene exactamente este texto
+// Texto sobre el que se evalúan las búsquedas de texto libre (Q1); el índice FTS contiene exactamente este texto.
+// Debe mantenerse idéntico al searchText del core (mismo orden de campos)
 export function buildSearchText(log: ParsedLog, container: string, namespace: string): string {
   const head = [
-    log.message, log.error, log.stackTrace, log.service, log.traceId, log.spanId, log.caller,
-    log.podName, container, namespace,
+    log.message, log.error, log.stackTrace, log.service, log.env, log.version, log.traceId, log.spanId,
+    log.caller, log.podName, container, namespace,
   ].filter(Boolean).join('\n');
   return `${head}\n${JSON.stringify(log.extra)}`;
 }
@@ -166,7 +172,8 @@ export class HistoryStore {
         scope.context, scope.namespace, scope.pod, scope.container, tsUs,
         createHash('sha1').update(log.raw).digest('hex').slice(0, 24),
         log.raw, log.isJson ? 1 : 0, log.timestamp ?? null, k8sTimestamp, log.level, log.message,
-        log.service ?? null, log.traceId ?? null, log.spanId ?? null, log.caller ?? null,
+        log.service ?? null, log.env ?? null, log.version ?? null, log.traceId ?? null, log.spanId ?? null,
+        log.caller ?? null,
         log.error ?? null, log.stackTrace ?? null, JSON.stringify(log.extra),
       ],
       searchText: buildSearchText({ ...log, podName: scope.pod }, scope.container, scope.namespace),

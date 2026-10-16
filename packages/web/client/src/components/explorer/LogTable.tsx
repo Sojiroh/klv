@@ -19,6 +19,8 @@ const FIXED_WIDTHS: Record<string, number> = {
   container: 120,
   namespace: 110,
   service: 120,
+  env: 90,
+  version: 110,
   trace: 150,
   caller: 160,
 };
@@ -30,8 +32,8 @@ function columnWidth(id: ColumnId, showDate: boolean): number {
 }
 
 function cellColor(id: ColumnId): string {
-  if (id === 'pod') return 'text-violet-400/80';
-  if (id === 'service') return 'text-sky-400/70';
+  if (id === 'pod') return 'text-violet-700';
+  if (id === 'service') return 'text-sky-700';
   if (id === 'time') return 'text-klv-text-muted';
   return 'text-klv-text-secondary';
 }
@@ -67,7 +69,7 @@ function Cell({ log, id, showDate }: { log: ParsedLog; id: ColumnId; showDate: b
     const isError = log.level === 'ERROR' || log.level === 'FATAL';
     return (
       <span
-        className={`truncate transition-colors ${isError ? 'text-red-300' : 'text-klv-text-secondary group-hover:text-klv-text'}`}
+        className={`truncate transition-colors ${isError ? 'text-red-600' : 'text-klv-text-secondary group-hover:text-klv-text'}`}
       >
         {log.message}
       </span>
@@ -216,7 +218,7 @@ export default function LogTable({
                       type="button"
                       onClick={() => onRemoveColumn(id)}
                       title={`Remove ${columnLabel(id)} column`}
-                      className="opacity-0 group-hover/head:opacity-100 text-klv-text-muted hover:text-red-400 transition-opacity"
+                      className="opacity-0 group-hover/head:opacity-100 text-klv-text-muted hover:text-red-600 transition-opacity"
                     >
                       <XIcon className="w-2.5 h-2.5" />
                     </button>
@@ -234,7 +236,7 @@ export default function LogTable({
               const stateClass = isSelected
                 ? 'border-klv-accent bg-klv-accent/10'
                 : isActive
-                  ? 'border-klv-accent/40 bg-klv-elevated/60'
+                  ? 'border-klv-accent/40 bg-klv-accent/5'
                   : 'border-transparent hover:border-klv-accent/40 hover:bg-klv-elevated/40';
               return (
                 <div

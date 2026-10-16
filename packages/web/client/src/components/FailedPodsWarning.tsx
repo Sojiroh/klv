@@ -4,7 +4,7 @@ export default function FailedPodsWarning({ failedPods }: { failedPods?: FailedP
   if (!failedPods || failedPods.length === 0) return null;
 
   return (
-    <div className="klv-card border-amber-500/30 bg-amber-500/5 px-4 py-3 mb-4 text-xs text-amber-400">
+    <div className="klv-card border-amber-200 bg-amber-50 px-4 py-3 mb-4 text-xs text-amber-700">
       <p className="font-semibold mb-1">
         Could not read logs from {failedPods.length} pod{failedPods.length !== 1 ? 's' : ''}
       </p>

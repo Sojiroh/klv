@@ -10,7 +10,7 @@ const SYNTAX_HELP: { example: string; meaning: string }[] = [
   { example: '"connection refused"', meaning: 'exact phrase' },
   { example: 'time*out', meaning: 'wildcard' },
   { example: 'level:error', meaning: 'level (alias status); level:>=warn' },
-  { example: 'service:api pod:web-*', meaning: 'fields: level, service, pod, container, namespace, trace, span, caller, message, error' },
+  { example: 'service:api pod:web-*', meaning: 'fields: level, service, env, version, pod, container, namespace, trace, span, caller, message, error' },
   { example: '@http.status:>=500', meaning: 'attribute from the JSON body; >, >=, <, <=' },
   { example: '@duration:[100 TO 500]', meaning: 'numeric range (inclusive)' },
   { example: '@user.id:*', meaning: 'attribute exists' },
@@ -77,7 +77,7 @@ export default function QueryBar({ value, onApply, placeholder = 'Search logs…
       <div
         className={`flex items-center gap-2 bg-klv-elevated border rounded-lg px-3 transition-all duration-200
                     focus-within:ring-1 ${error
-                      ? 'border-red-500/50 focus-within:ring-red-500/20'
+                      ? 'border-red-400 focus-within:ring-red-500/15'
                       : 'border-klv-border focus-within:border-klv-accent/50 focus-within:ring-klv-accent/20'}`}
       >
         <SearchIcon className="w-3.5 h-3.5 text-klv-text-muted shrink-0" />
@@ -124,7 +124,7 @@ export default function QueryBar({ value, onApply, placeholder = 'Search logs…
             ?
           </button>
           {helpOpen && (
-            <div className="absolute right-0 top-full mt-2 w-[440px] max-w-[90vw] klv-card bg-klv-elevated shadow-2xl shadow-black/50 z-40 p-4 animate-fade-in">
+            <div className="absolute right-0 top-full mt-2 w-[440px] max-w-[90vw] klv-card bg-klv-surface border border-klv-border shadow-xl shadow-slate-900/10 z-40 p-4 animate-fade-in">
               <p className="klv-section-label mb-2">Query syntax</p>
               <ul className="space-y-1.5">
                 {SYNTAX_HELP.map((row) => (
@@ -143,10 +143,10 @@ export default function QueryBar({ value, onApply, placeholder = 'Search logs…
       </div>
 
       {error && (
-        <div className="mt-1.5 text-xs font-mono text-red-400 animate-fade-in">
+        <div className="mt-1.5 text-xs font-mono text-red-600 animate-fade-in">
           <div className="whitespace-pre overflow-x-auto text-klv-text-muted">
             {draft.slice(0, error.position)}
-            <span className="text-red-400 underline decoration-wavy decoration-red-400/70 underline-offset-4">
+            <span className="text-red-600 underline decoration-wavy decoration-red-500/70 underline-offset-4">
               {draft.charAt(error.position) || '\u00a0'}
             </span>
             {draft.slice(error.position + 1)}

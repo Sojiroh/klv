@@ -93,7 +93,7 @@ export default function TimeRangePicker({ value, now, onChange }: Props) {
       </div>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[320px] klv-card bg-klv-elevated shadow-2xl shadow-black/50 z-40 p-4 space-y-3 animate-fade-in">
+        <div className="absolute right-0 top-full mt-2 w-[320px] klv-card bg-klv-surface border border-klv-border shadow-xl shadow-slate-900/10 z-40 p-4 space-y-3 animate-fade-in">
           <p className="klv-section-label">Custom range</p>
           <label className="block">
             <span className="text-[11px] text-klv-text-muted font-body">From</span>
@@ -116,7 +116,7 @@ export default function TimeRangePicker({ value, now, onChange }: Props) {
               className="klv-input w-full font-mono text-xs mt-1 [color-scheme:dark]"
             />
           </label>
-          {error && <p className="text-xs text-red-400">{error}</p>}
+          {error && <p className="text-xs text-red-600">{error}</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="klv-btn-secondary text-xs !px-3 !py-1.5" onClick={() => setOpen(false)}>
               Cancel

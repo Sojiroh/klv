@@ -191,7 +191,7 @@ export default function Explorer({
                 type="button"
                 onClick={() => setPattern(null)}
                 title="Clear pattern filter"
-                className="hover:text-white transition-colors"
+                className="hover:text-klv-text transition-colors"
               >
                 <XIcon className="w-3 h-3" />
               </button>

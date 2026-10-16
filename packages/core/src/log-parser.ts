@@ -8,6 +8,8 @@ export interface ParsedLog {
   level: LogLevel;
   message: string;
   service?: string;
+  env?: string;
+  version?: string;
   traceId?: string;
   spanId?: string;
   caller?: string;
@@ -21,17 +23,21 @@ export interface ParsedLog {
 const LEVEL_FIELDS = ['level', 'severity', 'log.level', 'loglevel', 'lvl', 'log_level'];
 const MESSAGE_FIELDS = ['message', 'msg', 'log', 'text', 'body'];
 const TIMESTAMP_FIELDS = ['timestamp', 'time', 'ts', '@timestamp', 'datetime', 'date', 'logged_at'];
-const SERVICE_FIELDS = ['service', 'service_name', 'app', 'application', 'logger', 'logger_name'];
-const TRACE_FIELDS = ['trace_id', 'traceId', 'trace-id', 'x-request-id', 'request_id', 'requestId', 'correlationId'];
-const SPAN_FIELDS = ['span_id', 'spanId', 'span-id'];
+const SERVICE_FIELDS = ['service', 'dd.service', 'dd_service', 'service_name', 'app', 'application', 'logger', 'logger_name'];
+const ENV_FIELDS = ['dd.env', 'dd_env', 'env'];
+const VERSION_FIELDS = ['dd.version', 'dd_version', 'version'];
+const TRACE_FIELDS = ['dd.trace_id', 'dd_trace_id', 'trace_id', 'traceId', 'trace-id', 'x-request-id', 'request_id', 'requestId', 'correlationId'];
+const SPAN_FIELDS = ['dd.span_id', 'dd_span_id', 'span_id', 'spanId', 'span-id'];
 const ERROR_FIELDS = ['error', 'err', 'exception', 'error_message'];
 const STACK_FIELDS = ['stack', 'stackTrace', 'stack_trace', 'error.stack_trace'];
 const CALLER_FIELDS = ['caller', 'source', 'class', 'method', 'function'];
 
+// Tags de Datadog dentro del objeto anidado `dd`
+const DD_TAGS = ['trace_id', 'span_id', 'service', 'env', 'version'];
 // Campos "conocidos" que se extraen y no van en extra
 const KNOWN_FIELDS = new Set([
   ...LEVEL_FIELDS, ...MESSAGE_FIELDS, ...TIMESTAMP_FIELDS,
-  ...SERVICE_FIELDS, ...TRACE_FIELDS, ...SPAN_FIELDS,
+  ...SERVICE_FIELDS, ...ENV_FIELDS, ...VERSION_FIELDS, ...TRACE_FIELDS, ...SPAN_FIELDS,
   ...ERROR_FIELDS, ...STACK_FIELDS, ...CALLER_FIELDS,
 ]);
 
@@ -95,6 +101,12 @@ export function parseLevel(raw: unknown): LogLevel {
   if (raw >= 20) return 'DEBUG';
   if (raw >= 10) return 'TRACE';
   return 'UNKNOWN';
+}
+
+// `status` (atributo reservado de Datadog) solo cuenta como nivel si es texto; numérico = código HTTP.
+function levelFromStatus(record: Record<string, unknown>): LogLevel {
+  const status = record.status;
+  return typeof status === 'string' ? (LEVEL_MAP[status.trim().toLowerCase()] ?? 'UNKNOWN') : 'UNKNOWN';
 }
 
 function detectLevelFromText(text: string): LogLevel {
@@ -167,14 +179,27 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
   const timestamp = normalizeTimestamp(findValue(record, TIMESTAMP_FIELDS)) ?? k8sTimestamp;
   const message = findField(record, MESSAGE_FIELDS) ?? '';
   const fieldLevel = parseLevel(findValue(record, LEVEL_FIELDS));
-  const level = fieldLevel !== 'UNKNOWN' ? fieldLevel : detectLevelFromText(message);
+  const statusLevel = fieldLevel === 'UNKNOWN' ? levelFromStatus(record) : 'UNKNOWN';
+  const level = fieldLevel !== 'UNKNOWN' ? fieldLevel : statusLevel !== 'UNKNOWN' ? statusLevel : detectLevelFromText(message);
 
-  // Extraer campos extra (todo lo que no es un campo conocido)
+  // Extraer campos extra (todo lo que no es un campo conocido); status solo se excluye si aportó el nivel
   const extra: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
+    if (key === 'status' && statusLevel !== 'UNKNOWN') continue;
     if (!KNOWN_FIELDS.has(key) && value !== undefined && value !== null) {
       extra[key] = value;
     }
+  }
+
+  // Los tags dd.* ya se hoistearon a campos propios: se quitan del objeto anidado `dd`
+  const dd = extra.dd;
+  if (typeof dd === 'object' && dd !== null && !Array.isArray(dd)) {
+    const rest: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dd)) {
+      if (!DD_TAGS.includes(key)) rest[key] = value;
+    }
+    if (Object.keys(rest).length === 0) delete extra.dd;
+    else extra.dd = rest;
   }
 
   return {
@@ -185,6 +210,8 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
     level,
     message,
     service: findField(record, SERVICE_FIELDS),
+    env: findField(record, ENV_FIELDS),
+    version: findField(record, VERSION_FIELDS),
     traceId: findField(record, TRACE_FIELDS),
     spanId: findField(record, SPAN_FIELDS),
     caller: findField(record, CALLER_FIELDS),

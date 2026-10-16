@@ -146,7 +146,7 @@ export default function Histogram({ histogram, onZoom }: Props) {
 
       {hovered && hover && !drag && (
         <div
-          className="pointer-events-none absolute z-20 top-0 min-w-[150px] klv-card bg-klv-elevated shadow-xl shadow-black/50 px-3 py-2 text-[11px] font-mono"
+          className="pointer-events-none absolute z-20 top-0 min-w-[150px] klv-card bg-klv-surface shadow-xl shadow-slate-900/10 border border-klv-border px-3 py-2 text-[11px] font-mono"
           style={hover.x > width / 2 ? { right: width - hover.x + 12 } : { left: hover.x + 12 }}
         >
           <p className="text-klv-text-secondary">

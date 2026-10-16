@@ -46,7 +46,7 @@ export default function ExportMenu({ logs, columns, name }: Props) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-56 klv-card bg-klv-elevated shadow-2xl shadow-black/50 z-40 py-1 animate-fade-in">
+        <div className="absolute right-0 top-full mt-2 w-56 klv-card bg-klv-surface border border-klv-border shadow-xl shadow-slate-900/10 z-40 py-1 animate-fade-in">
           <p className="px-3 py-1.5 text-[10px] text-klv-text-muted font-mono">{logs.length.toLocaleString()} filtered logs</p>
           <button
             type="button"
@@ -68,7 +68,7 @@ export default function ExportMenu({ logs, columns, name }: Props) {
       {status && (
         <div
           className={`absolute right-0 top-full mt-2 z-30 max-w-[360px] klv-card px-3 py-2 text-[11px] font-mono break-all animate-fade-in ${
-            status.ok ? 'text-emerald-400 border-emerald-500/30' : 'text-red-400 border-red-500/30'
+            status.ok ? 'text-emerald-600 border-emerald-200 bg-emerald-50' : 'text-red-600 border-red-200 bg-red-50'
           }`}
         >
           {status.text}

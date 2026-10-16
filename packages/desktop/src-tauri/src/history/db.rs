@@ -95,13 +95,19 @@ END;
 ";
 
 /// `user_version = índice + 1`; añadir migraciones al final.
-const MIGRATIONS: &[&[&str]] = &[&[CONFIG_SCHEMA, LOGS_SCHEMA]];
+const MIGRATIONS: &[&[&str]] = &[
+    &[CONFIG_SCHEMA, LOGS_SCHEMA],
+    &[
+        "ALTER TABLE logs ADD COLUMN env TEXT",
+        "ALTER TABLE logs ADD COLUMN version TEXT",
+    ],
+];
 
 const INSERT_LOG: &str = "
 INSERT OR IGNORE INTO logs (
     context, namespace, pod, container, ts, line_hash, k8s_timestamp, timestamp, level,
-    message, service, trace_id, span_id, caller, error, stack_trace, is_json, raw, extra
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)";
+    message, service, env, version, trace_id, span_id, caller, error, stack_trace, is_json, raw, extra
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)";
 
 /// Línea ya parseada lista para insertar.
 pub struct NewRow {
@@ -137,7 +143,9 @@ pub fn micros_to_iso(micros: i64) -> Option<String> {
     DateTime::from_timestamp_micros(micros).map(|d| d.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
-/// Texto indexado en FTS: exactamente el que evalúa `matches_query` para los nodos `text`.
+/// Texto indexado en FTS: exactamente el que evalúa `matches_query` para los nodos `text`
+/// (`query.rs::search_text`): message, error, stack_trace, service, env, version, trace_id,
+/// span_id, caller, pod, container, namespace y después el JSON de `extra`.
 fn indexed_text(row: &NewRow) -> String {
     search_text(&QueryTarget {
         log: &row.log,
@@ -332,6 +340,8 @@ impl Store {
                         level_str(log.level),
                         log.message,
                         log.service,
+                        log.env,
+                        log.version,
                         log.trace_id,
                         log.span_id,
                         log.caller,

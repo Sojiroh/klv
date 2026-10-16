@@ -21,7 +21,7 @@ const MAX_LIMIT: usize = 10_000;
 const SCAN_BUDGET: usize = 200_000;
 
 const SELECT_COLUMNS: &str = "id, context, namespace, pod, container, ts, k8s_timestamp, timestamp, \
-    level, message, service, trace_id, span_id, caller, error, stack_trace, is_json, raw, extra";
+    level, message, service, env, version, trace_id, span_id, caller, error, stack_trace, is_json, raw, extra";
 
 const SEARCHABLE_LEVELS: [LogLevel; 6] = [
     LogLevel::TRACE,
@@ -259,21 +259,23 @@ fn build_sql(plan: &QueryPlan) -> (String, Vec<Value>) {
 fn read_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, i64, HistoryLog)> {
     let level: String = row.get(8)?;
     let pod: String = row.get(3)?;
-    let extra: String = row.get(18)?;
+    let extra: String = row.get(20)?;
     let k8s_timestamp: String = row.get(6)?;
     let log = ParsedLog {
-        raw: row.get(17)?,
-        is_json: row.get(16)?,
+        raw: row.get(19)?,
+        is_json: row.get(18)?,
         timestamp: row.get(7)?,
         k8s_timestamp: Some(k8s_timestamp),
         level: parse_log_level(&level),
         message: row.get(9)?,
         service: row.get(10)?,
-        trace_id: row.get(11)?,
-        span_id: row.get(12)?,
-        caller: row.get(13)?,
-        error: row.get(14)?,
-        stack_trace: row.get(15)?,
+        env: row.get(11)?,
+        version: row.get(12)?,
+        trace_id: row.get(13)?,
+        span_id: row.get(14)?,
+        caller: row.get(15)?,
+        error: row.get(16)?,
+        stack_trace: row.get(17)?,
         pod_name: Some(pod),
         extra: serde_json::from_str(&extra).unwrap_or_else(|_| Map::new()),
     };

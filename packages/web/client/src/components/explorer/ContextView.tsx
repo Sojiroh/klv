@@ -110,8 +110,8 @@ export default function ContextView({ log, source, scope, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-8">
-      <div className="absolute inset-0 bg-black/60 animate-fade-in" onClick={onClose} />
-      <div className="relative klv-card bg-klv-surface w-full max-w-[1100px] max-h-full flex flex-col shadow-2xl shadow-black/60 animate-slide-up">
+      <div className="absolute inset-0 bg-slate-900/30 animate-fade-in" onClick={onClose} />
+      <div className="relative klv-card bg-klv-surface w-full max-w-[1100px] max-h-full flex flex-col shadow-xl shadow-slate-900/15 animate-slide-up">
         <div className="flex items-center justify-between gap-4 px-5 py-3.5 border-b border-klv-border">
           <div className="min-w-0">
             <h3 className="font-display font-bold tracking-tight">
@@ -142,7 +142,7 @@ export default function ContextView({ log, source, scope, onClose }: Props) {
             <p className="py-12 text-center text-sm text-klv-text-muted animate-pulse">Loading context…</p>
           )}
           {state.status === 'error' && (
-            <p className="py-10 px-6 text-center text-sm text-amber-400 font-mono break-words">{state.message}</p>
+            <p className="py-10 px-6 text-center text-sm text-amber-600 font-mono break-words">{state.message}</p>
           )}
           {state.status === 'ready' && (
             <LogTable

@@ -14,6 +14,8 @@ use crate::parser::log_parser::{level_priority, LogLevel, ParsedLog};
 pub enum ReservedField {
     Level,
     Service,
+    Env,
+    Version,
     Pod,
     Container,
     Namespace,
@@ -132,6 +134,8 @@ impl<'a> Ctx<'a, '_> {
             QueryField::Reserved { name } => match name {
                 ReservedField::Level => Some(Resolved::Str(level_name(&log.level))),
                 ReservedField::Service => log.service.as_deref().map(Resolved::Str),
+                ReservedField::Env => log.env.as_deref().map(Resolved::Str),
+                ReservedField::Version => log.version.as_deref().map(Resolved::Str),
                 ReservedField::Pod => log.pod_name.as_deref().map(Resolved::Str),
                 ReservedField::Container => self.target.container.map(Resolved::Str),
                 ReservedField::Namespace => self.target.namespace.map(Resolved::Str),
@@ -226,7 +230,7 @@ fn level_from_name(name: &str) -> Option<LogLevel> {
     }
 }
 
-/// `[message, error, stackTrace, service, traceId, spanId, caller, podName, container, namespace]`
+/// `[message, error, stackTrace, service, env, version, traceId, spanId, caller, podName, container, namespace]`
 /// sin vacíos, unidos con `\n`, más `\n` y el `JSON.stringify` de `extra`.
 pub fn search_text(target: &QueryTarget<'_>) -> String {
     let log = target.log;
@@ -235,6 +239,8 @@ pub fn search_text(target: &QueryTarget<'_>) -> String {
         log.error.as_deref(),
         log.stack_trace.as_deref(),
         log.service.as_deref(),
+        log.env.as_deref(),
+        log.version.as_deref(),
         log.trace_id.as_deref(),
         log.span_id.as_deref(),
         log.caller.as_deref(),

@@ -87,11 +87,11 @@ function validate(input: HistoryConfigInput): string | null {
 }
 
 const stateStyles: Record<string, string> = {
-  running: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
-  following: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
-  waiting: 'text-amber-400 bg-amber-400/10 border-amber-400/20',
-  error: 'text-red-400 bg-red-400/10 border-red-400/20',
-  disabled: 'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+  running: 'text-emerald-600 bg-emerald-50 border-emerald-200',
+  following: 'text-emerald-600 bg-emerald-50 border-emerald-200',
+  waiting: 'text-amber-700 bg-amber-50 border-amber-200',
+  error: 'text-red-600 bg-red-50 border-red-200',
+  disabled: 'text-slate-500 bg-slate-100 border-slate-200',
 };
 
 function StateBadge({ state }: { state: string }) {
@@ -118,11 +118,11 @@ function Streams({ streams }: { streams: CollectorStream[] }) {
       <tbody>
         {streams.map((s) => (
           <tr key={`${s.pod}/${s.container}`} className="border-t border-klv-border-subtle">
-            <td className="py-1 pr-4 text-violet-400/80 break-all">{s.pod}</td>
+            <td className="py-1 pr-4 text-violet-700 break-all">{s.pod}</td>
             <td className="py-1 pr-4 text-klv-text-secondary">{s.container}</td>
             <td className="py-1 pr-4"><StateBadge state={s.state} /></td>
             <td className="py-1 pr-4 text-klv-text-muted">{s.lastLineAt ? formatTimestamp(s.lastLineAt) : '--'}</td>
-            <td className="py-1 text-red-400 break-all">{s.error}</td>
+            <td className="py-1 text-red-600 break-all">{s.error}</td>
           </tr>
         ))}
       </tbody>
@@ -284,7 +284,7 @@ export default function CollectorPanel() {
                             disabled={!live}
                             onClick={() => setExpanded((e) => ({ ...e, [t.key]: !open }))}
                             title="Show streams"
-                            className="w-6 h-6 flex items-center justify-center rounded text-klv-text-muted hover:text-klv-text hover:bg-klv-elevated disabled:opacity-20"
+                            className="w-6 h-6 flex items-center justify-center rounded text-klv-text-muted hover:text-klv-text hover:bg-klv-elevated disabled:opacity-40"
                           >
                             {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
                           </button>
@@ -347,7 +347,7 @@ export default function CollectorPanel() {
                                   {following}/{live.streams.length} streams
                                 </span>
                               </div>
-                              {live.error && <p className="text-[11px] text-red-400 font-mono break-all">{live.error}</p>}
+                              {live.error && <p className="text-[11px] text-red-600 font-mono break-all">{live.error}</p>}
                             </div>
                           ) : (
                             <span className="text-[11px] text-klv-text-muted">{t.id ? '--' : 'Unsaved'}</span>
@@ -358,7 +358,7 @@ export default function CollectorPanel() {
                             type="button"
                             onClick={() => setDraft((d) => d && { ...d, targets: d.targets.filter((x) => x.key !== t.key) })}
                             title="Delete target"
-                            className="w-6 h-6 flex items-center justify-center rounded text-klv-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                            className="w-6 h-6 flex items-center justify-center rounded text-klv-text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
                           >
                             <TrashIcon />
                           </button>
@@ -432,9 +432,9 @@ export default function CollectorPanel() {
           >
             Discard
           </button>
-          {dirty && validation && <span className="text-xs text-amber-400">{validation}</span>}
+          {dirty && validation && <span className="text-xs text-amber-600">{validation}</span>}
           {dirty && !validation && <span className="text-xs text-klv-text-muted">Unsaved changes — saving restarts the affected collectors</span>}
-          {saveError && <span className="text-xs text-red-400 font-mono break-all">{saveError}</span>}
+          {saveError && <span className="text-xs text-red-600 font-mono break-all">{saveError}</span>}
         </div>
       )}
 
@@ -447,7 +447,7 @@ export default function CollectorPanel() {
               type="button"
               onClick={() => setConfirmClear(true)}
               disabled={!status || status.stats.rows === 0}
-              className="klv-btn text-xs !px-3 !py-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10"
+              className="klv-btn text-xs !px-3 !py-1.5 border border-red-200 text-red-600 hover:bg-red-50"
             >
               Clear history
             </button>
@@ -482,8 +482,8 @@ export default function CollectorPanel() {
         )}
 
         {confirmClear && (
-          <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 flex flex-wrap items-center gap-3">
-            <p className="text-sm text-red-300 flex-1 min-w-[240px]">
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-red-600 flex-1 min-w-[240px]">
               Permanently delete all {status?.stats.rows.toLocaleString() ?? ''} stored log rows? This cannot be undone.
             </p>
             <button type="button" onClick={() => setConfirmClear(false)} disabled={clearing} className="klv-btn-secondary !px-3 !py-1.5 text-xs">
@@ -492,7 +492,7 @@ export default function CollectorPanel() {
             <button type="button" onClick={() => void clearHistory()} disabled={clearing} className="klv-btn-danger !px-3 !py-1.5 text-xs">
               {clearing ? 'Deleting…' : 'Delete everything'}
             </button>
-            {clearError && <p className="w-full text-xs text-red-400 font-mono break-all">{clearError}</p>}
+            {clearError && <p className="w-full text-xs text-red-600 font-mono break-all">{clearError}</p>}
           </div>
         )}
       </section>

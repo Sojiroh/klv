@@ -15,7 +15,7 @@ function RestartsBadge({ count }: { count: number }) {
     <span
       className={`klv-badge border ${
         count > 0
-          ? 'text-amber-400 bg-amber-400/10 border-amber-400/20'
+          ? 'text-amber-700 bg-amber-50 border-amber-200'
           : 'text-klv-text-muted bg-klv-elevated border-klv-border'
       }`}
     >
@@ -156,7 +156,7 @@ function ContainerRow({
                   <RestartsBadge count={pod.restarts} />
                   <Link
                     to={`/logs/${encodeURIComponent(namespace)}/${encodeURIComponent(pod.name)}?container=${encodeURIComponent(g.container)}&previous=true`}
-                    className="text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+                    className="text-xs font-medium text-amber-600 hover:text-amber-700 transition-colors"
                   >
                     Previous logs
                   </Link>

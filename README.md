@@ -18,7 +18,7 @@ packages/
 - **Core**: TypeScript, @kubernetes/client-node
 - **CLI**: Commander, chalk, ora, cli-table3
 - **Backend**: NestJS, Socket.IO (WebSocket gateway)
-- **Frontend**: React 19, Vite, Tailwind CSS, React Router, socket.io-client, @tanstack/react-virtual
+- **Frontend**: React 19, Vite, Tailwind CSS (tema claro estilo Datadog), React Router, socket.io-client, @tanstack/react-virtual
 - **Desktop**: Tauri 2, Rust, kube-rs, tokio
 
 ## Instalacion
@@ -67,7 +67,7 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 ### Log Explorer
 
 - **Query language** estilo Datadog, compartible via URL (`?q=...&range=1h&cols=...`)
-- **Facetas** con conteos por level, pod, container, service y atributos JSON; click para incluir, alt-click para excluir
+- **Facetas** con conteos por level, pod, container, service, env, version y atributos JSON; click para incluir, alt-click para excluir
 - **Histograma** de volumen por nivel con selector de rango (15m, 1h, 4h, 24h, 7d, 30d o custom) y zoom arrastrando
 - **Columnas configurables** (incluye atributos `@campo`) y **export** a CSV/JSON
 - **Patrones**: agrupa mensajes similares (numeros, IDs, UUIDs, IPs, timestamps normalizados) con conteo por nivel
@@ -81,7 +81,7 @@ Sintaxis del query:
 | `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en mensaje, error, stack, service, trace y atributos |
 | `time*out` | Comodin |
 | `level:error`, `level:>=warn` | Nivel exacto o minimo (alias `status:`) |
-| `service:api-*`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe) |
+| `service:api-*`, `env:prod`, `version:1.2.3`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe). Los tags de Datadog `@dd.trace_id:`/`dd.trace_id:`, `dd.span_id:`, `dd.service:`, `dd.env:` y `dd.version:` son alias de los campos reservados |
 | `@http.status:500`, `@user.id:*`, `@duration:>500`, `@http.status:[500 TO 599]` | Atributos JSON (ruta con puntos), comparaciones y rangos numericos |
 | `-healthcheck`, `NOT service:api`, `(a OR b) AND c` | Negacion, `AND` implicito, `OR` y parentesis |
 
@@ -253,13 +253,18 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 
 Reconoce automaticamente campos comunes de logs JSON:
 
-- **Level**: `level`, `severity`, `log.level` (plano estilo ECS o anidado), `lvl`, `loglevel`, `log_level`; acepta niveles numericos de pino/bunyan (`30` = INFO, `50` = ERROR) y severidades de GCP (`NOTICE`, `CRITICAL`, `ALERT`, `EMERGENCY`)
+- **Level**: `level`, `severity`, `log.level` (plano estilo ECS o anidado), `lvl`, `loglevel`, `log_level`, y como ultimo recurso `status` (solo texto, p. ej. `"status":"error"`; si es numerico se trata como codigo HTTP y se ignora); acepta niveles numericos de pino/bunyan (`30` = INFO, `50` = ERROR) y severidades de GCP (`NOTICE`, `CRITICAL`, `ALERT`, `EMERGENCY`)
 - **Message**: `message`, `msg`, `log`, `text`, `body`
 - **Timestamp**: `timestamp`, `time`, `ts`, `@timestamp`; los epoch numericos (segundos, ms, µs o ns) se normalizan a ISO 8601
-- **Service**: `service`, `service_name`, `app`, `logger`
-- **Trace**: `trace_id`, `traceId`, `x-request-id`, `requestId`
+- **Service**: `service`, `dd.service`, `service_name`, `app`, `logger`
+- **Env**: `dd.env`, `dd_env`, `env`
+- **Version**: `dd.version`, `dd_version`, `version`
+- **Trace**: `dd.trace_id` (plano o anidado en `dd`), `dd_trace_id`, `trace_id`, `traceId`, `x-request-id`, `requestId`
+- **Span**: `dd.span_id`, `span_id`, `spanId`
 - **Error**: `error`, `err`, `exception`
 - **Stack**: `stack`, `stackTrace`, `stack_trace`, `error.stack_trace`
+
+Los tags que inyecta el tracer de Datadog (`dd.trace_id`, `dd.span_id`, `dd.service`, `dd.env`, `dd.version`) se mapean a estos campos y se eliminan de los atributos extra.
 
 En lineas de texto plano el nivel se detecta por `level=...` (logfmt), por la primera palabra de nivel en mayusculas (`INFO`, `WARN`, `ERROR`...) o por palabras como `error`/`exception`.
 

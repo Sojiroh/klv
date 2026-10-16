@@ -5,6 +5,8 @@ import type { LogLevel, ParsedLog } from './log-parser.js';
 export type ReservedField =
   | 'level'
   | 'service'
+  | 'env'
+  | 'version'
   | 'pod'
   | 'container'
   | 'namespace'
@@ -35,10 +37,22 @@ export interface QueryableLog extends ParsedLog {
   namespace?: string;
 }
 
+// Alias de atributos de Datadog (dd.*): equivalen al campo reservado correspondiente.
+const DD_FIELDS: Record<string, ReservedField> = {
+  'dd.trace_id': 'trace',
+  'dd.span_id': 'span',
+  'dd.service': 'service',
+  'dd.env': 'env',
+  'dd.version': 'version',
+};
+
 const RESERVED_FIELDS: Record<string, ReservedField> = {
+  ...DD_FIELDS,
   level: 'level',
   status: 'level',
   service: 'service',
+  env: 'env',
+  version: 'version',
   pod: 'pod',
   container: 'container',
   namespace: 'namespace',
@@ -91,8 +105,11 @@ function tokenLabel(token: Token): string {
 }
 
 function resolveFieldName(head: string): QueryField | undefined {
-  if (head.length > 1 && head.startsWith('@')) return { kind: 'attr', path: head.slice(1) };
   const lower = head.toLowerCase();
+  if (head.length > 1 && head.startsWith('@')) {
+    const dd = lower.slice(1);
+    return Object.hasOwn(DD_FIELDS, dd) ? { kind: 'reserved', name: DD_FIELDS[dd] } : { kind: 'attr', path: head.slice(1) };
+  }
   return Object.hasOwn(RESERVED_FIELDS, lower) ? { kind: 'reserved', name: RESERVED_FIELDS[lower] } : undefined;
 }
 
@@ -415,6 +432,8 @@ function searchText(log: QueryableLog): string {
     log.error,
     log.stackTrace,
     log.service,
+    log.env,
+    log.version,
     log.traceId,
     log.spanId,
     log.caller,

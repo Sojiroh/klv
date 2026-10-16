@@ -56,7 +56,7 @@ export default function ColumnsPicker({ columns, facets, onChange }: Props) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[300px] klv-card bg-klv-elevated shadow-2xl shadow-black/50 z-40 p-3 animate-fade-in max-h-[70vh] overflow-auto">
+        <div className="absolute right-0 top-full mt-2 w-[300px] klv-card bg-klv-elevated shadow-xl shadow-slate-900/10 z-40 p-3 animate-fade-in max-h-[70vh] overflow-auto">
           <p className="klv-section-label mb-2">Shown (in order)</p>
           <ul className="space-y-0.5 mb-3">
             {columns.map((id, i) => (
@@ -84,7 +84,7 @@ export default function ColumnsPicker({ columns, facets, onChange }: Props) {
                   type="button"
                   disabled={id === 'message'}
                   onClick={() => onChange(withoutColumn(columns, id))}
-                  className="px-1 text-klv-text-muted hover:text-red-400 disabled:opacity-20"
+                  className="px-1 text-klv-text-muted hover:text-red-600 disabled:opacity-20"
                   title={id === 'message' ? 'The message column is always shown' : 'Remove column'}
                 >
                   <XIcon className="w-3 h-3" />

@@ -87,7 +87,7 @@ export default function LogDetailPanel({
               type="button"
               title="Exclude from query"
               onClick={() => onFilter(fieldClause(field, value), 'exclude')}
-              className={`${iconButton} hover:text-red-400 hover:bg-red-500/10`}
+              className={`${iconButton} hover:text-red-600 hover:bg-red-50`}
             >
               <MinusIcon className="w-3 h-3" />
             </button>
@@ -131,7 +131,7 @@ export default function LogDetailPanel({
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/40 z-40 animate-fade-in" onClick={onClose} />
+      <div className="fixed inset-0 bg-slate-900/30 z-40 animate-fade-in" onClick={onClose} />
 
       {/* Panel */}
       <div
@@ -184,15 +184,17 @@ export default function LogDetailPanel({
               <div className="klv-card p-3 font-mono text-xs">
                 {row('level', { field: 'level', value: log.level, column: 'level' }, cfg.color)}
                 {row('message', { value: log.message })}
-                {row('service', { field: 'service', value: log.service ?? '', column: 'service' }, 'text-sky-400')}
-                {row('pod', { field: 'pod', value: log.podName ?? '', column: 'pod' }, 'text-violet-400')}
+                {row('service', { field: 'service', value: log.service ?? '', column: 'service' }, 'text-sky-700')}
+                {row('env', { field: 'env', value: log.env ?? '', column: 'env' })}
+                {row('version', { field: 'version', value: log.version ?? '', column: 'version' })}
+                {row('pod', { field: 'pod', value: log.podName ?? '', column: 'pod' }, 'text-violet-700')}
                 {row('container', { field: 'container', value: log.container ?? '', column: 'container' })}
                 {row('namespace', { field: 'namespace', value: log.namespace ?? '', column: 'namespace' })}
                 {row('context', { value: log.context ?? '' })}
                 {row('traceId', { field: 'trace', value: log.traceId ?? '', column: 'trace', trace: 'trace' })}
                 {row('spanId', { field: 'span', value: log.spanId ?? '', trace: 'span' })}
                 {row('caller', { field: 'caller', value: log.caller ?? '', column: 'caller' })}
-                {row('error', { field: 'error', value: log.error ?? '' }, 'text-red-400')}
+                {row('error', { field: 'error', value: log.error ?? '' }, 'text-red-600')}
               </div>
             </section>
 
@@ -205,7 +207,7 @@ export default function LogDetailPanel({
                       key={`${attr.field}-${i}`}
                       className="group flex items-start gap-3 py-1.5 border-b border-klv-border-subtle last:border-0"
                     >
-                      <span className="text-violet-400/80 shrink-0 max-w-[45%] break-all" title={attr.field}>
+                      <span className="text-violet-700 shrink-0 max-w-[45%] break-all" title={attr.field}>
                         {attr.field}
                       </span>
                       <span className="text-klv-text-secondary break-all min-w-0">{attr.display}</span>
@@ -224,7 +226,7 @@ export default function LogDetailPanel({
             {log.stackTrace && (
               <section>
                 <h3 className="klv-section-label mb-2">Stack Trace</h3>
-                <pre className="text-xs text-red-300/90 font-mono bg-red-950/20 border border-red-900/30
+                <pre className="text-xs text-red-700 font-mono bg-red-50 border border-red-200
                                 rounded-lg p-4 overflow-auto whitespace-pre-wrap">
                   {log.stackTrace}
                 </pre>

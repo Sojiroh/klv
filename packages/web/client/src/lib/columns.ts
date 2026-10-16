@@ -8,6 +8,8 @@ export type BuiltinColumnId =
   | 'container'
   | 'namespace'
   | 'service'
+  | 'env'
+  | 'version'
   | 'trace'
   | 'caller'
   | 'message';
@@ -23,6 +25,8 @@ export const BUILTIN_COLUMNS: ColumnId[] = [
   'container',
   'namespace',
   'service',
+  'env',
+  'version',
   'trace',
   'caller',
   'message',
@@ -35,6 +39,8 @@ const LABELS: Record<BuiltinColumnId, string> = {
   container: 'Container',
   namespace: 'Namespace',
   service: 'Service',
+  env: 'Env',
+  version: 'Version',
   trace: 'Trace',
   caller: 'Caller',
   message: 'Message',
@@ -79,6 +85,10 @@ export function columnValue(log: QueryableLog, id: ColumnId): string {
       return log.namespace ?? '';
     case 'service':
       return log.service ?? '';
+    case 'env':
+      return log.env ?? '';
+    case 'version':
+      return log.version ?? '';
     case 'trace':
       return log.traceId ?? '';
     case 'caller':

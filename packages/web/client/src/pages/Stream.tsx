@@ -90,8 +90,8 @@ export default function Stream() {
       <div className="flex items-center gap-4 mb-6">
         <h2 className="text-xl font-display font-bold tracking-tight">Stream</h2>
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse-dot' : 'bg-red-400'}`} />
-          <span className={`text-xs font-mono ${connected ? 'text-emerald-400' : 'text-red-400'}`}>
+          <span className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-500 animate-pulse-dot' : 'bg-red-500'}`} />
+          <span className={`text-xs font-mono ${connected ? 'text-emerald-600' : 'text-red-600'}`}>
             {connected ? 'Connected' : 'Disconnected'}
           </span>
         </div>
@@ -134,7 +134,7 @@ export default function Stream() {
                       onClick={() => setSelectedContainer(selectedContainer === c ? '' : c)}
                       className={`px-3 py-1.5 text-xs rounded-lg border font-mono transition-all duration-200 ${
                         selectedContainer === c
-                          ? 'border-klv-accent/50 text-klv-accent bg-klv-accent/10 shadow-[0_0_12px_rgba(249,115,22,0.1)]'
+                          ? 'border-klv-accent/50 text-klv-accent bg-klv-accent/10'
                           : 'border-klv-border text-klv-text-muted hover:border-klv-text-muted hover:text-klv-text-secondary'
                       }`}
                     >
@@ -152,7 +152,7 @@ export default function Stream() {
                 className="klv-btn-primary"
               >
                 Start streaming
-                <span className="text-white/60 ml-1.5 text-xs">
+                <span className="text-klv-text-secondary ml-1.5 text-xs">
                   ({podCount} pod{podCount !== 1 ? 's' : ''} / {selectedContainer || '...'})
                 </span>
               </button>
@@ -191,7 +191,7 @@ export default function Stream() {
 
           <span className="text-xs text-klv-text-muted font-mono ml-auto flex items-center gap-3">
             {dropped > 0 && (
-              <span className="text-amber-400" title="Lines discarded because the buffer was full">
+              <span className="text-amber-600" title="Lines discarded because the buffer was full">
                 {dropped.toLocaleString()} dropped
               </span>
             )}
@@ -205,7 +205,7 @@ export default function Stream() {
       {notices.length > 0 && (
         <div className="klv-card px-4 py-3 mb-4 max-h-32 overflow-auto text-xs font-mono space-y-0.5">
           {notices.map((n, i) => (
-            <p key={i} className={n.kind === 'error' ? 'text-red-400' : 'text-klv-text-muted'}>
+            <p key={i} className={n.kind === 'error' ? 'text-red-600' : 'text-klv-text-muted'}>
               {n.podName ? `${n.podName}: ` : ''}{n.message}
             </p>
           ))}

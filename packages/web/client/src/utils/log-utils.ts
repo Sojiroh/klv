@@ -2,22 +2,23 @@ import type { LogLevel } from '../types';
 
 export const LEVEL_ORDER: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'UNKNOWN'];
 
+// Colores de estado estilo Datadog sobre fondo claro: error rojo, warn ambar, info azul, debug morado
 export const levelConfig: Record<string, { color: string; bg: string; icon: string }> = {
-  TRACE: { color: 'text-zinc-500', bg: 'bg-zinc-500/10', icon: '·' },
-  DEBUG: { color: 'text-sky-400', bg: 'bg-sky-400/10', icon: '●' },
-  INFO: { color: 'text-emerald-400', bg: 'bg-emerald-400/10', icon: '●' },
-  WARN: { color: 'text-amber-400', bg: 'bg-amber-400/10', icon: '▲' },
-  ERROR: { color: 'text-red-400', bg: 'bg-red-400/10', icon: '✕' },
-  FATAL: { color: 'text-red-500 font-semibold', bg: 'bg-red-500/15', icon: '☠' },
-  UNKNOWN: { color: 'text-zinc-400', bg: 'bg-zinc-400/10', icon: '?' },
+  TRACE: { color: 'text-slate-400', bg: 'bg-slate-100', icon: '·' },
+  DEBUG: { color: 'text-violet-600', bg: 'bg-violet-50', icon: '●' },
+  INFO: { color: 'text-blue-600', bg: 'bg-blue-50', icon: '●' },
+  WARN: { color: 'text-amber-600', bg: 'bg-amber-50', icon: '▲' },
+  ERROR: { color: 'text-red-600', bg: 'bg-red-50', icon: '✕' },
+  FATAL: { color: 'text-red-700 font-semibold', bg: 'bg-red-100', icon: '☠' },
+  UNKNOWN: { color: 'text-slate-500', bg: 'bg-slate-100', icon: '?' },
 };
 
 export const statusStyles: Record<string, { dot: string; text: string }> = {
-  Running: { dot: 'bg-emerald-400', text: 'text-emerald-400' },
-  Pending: { dot: 'bg-amber-400', text: 'text-amber-400' },
-  Succeeded: { dot: 'bg-sky-400', text: 'text-sky-400' },
-  Failed: { dot: 'bg-red-400', text: 'text-red-400' },
-  Unknown: { dot: 'bg-zinc-500', text: 'text-zinc-500' },
+  Running: { dot: 'bg-emerald-500', text: 'text-emerald-600' },
+  Pending: { dot: 'bg-amber-500', text: 'text-amber-600' },
+  Succeeded: { dot: 'bg-blue-500', text: 'text-blue-600' },
+  Failed: { dot: 'bg-red-500', text: 'text-red-600' },
+  Unknown: { dot: 'bg-slate-400', text: 'text-slate-500' },
 };
 
 export function prettyRaw(raw: string): string {

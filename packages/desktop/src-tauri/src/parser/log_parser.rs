@@ -89,6 +89,21 @@ fn level_from_value(value: Option<&Value>) -> LogLevel {
     }
 }
 
+/// Nivel desde el atributo reservado `status` de Datadog: solo texto que sea un alias de nivel.
+/// Los números (`200`, `"404"`) son códigos HTTP y se ignoran.
+fn level_from_status(record: &Map<String, Value>) -> LogLevel {
+    match record.get("status") {
+        Some(Value::String(s)) => {
+            let text = s.trim();
+            LEVEL_ALIASES
+                .iter()
+                .find(|(name, _)| text.eq_ignore_ascii_case(name))
+                .map_or(LogLevel::UNKNOWN, |&(_, level)| level)
+        }
+        _ => LogLevel::UNKNOWN,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedLog {
@@ -102,6 +117,10 @@ pub struct ParsedLog {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,13 +156,19 @@ const TIMESTAMP_FIELDS: &[&str] = &[
 ];
 const SERVICE_FIELDS: &[&str] = &[
     "service",
+    "dd.service",
+    "dd_service",
     "service_name",
     "app",
     "application",
     "logger",
     "logger_name",
 ];
+const ENV_FIELDS: &[&str] = &["dd.env", "dd_env", "env"];
+const VERSION_FIELDS: &[&str] = &["dd.version", "dd_version", "version"];
 const TRACE_FIELDS: &[&str] = &[
+    "dd.trace_id",
+    "dd_trace_id",
     "trace_id",
     "traceId",
     "trace-id",
@@ -152,10 +177,13 @@ const TRACE_FIELDS: &[&str] = &[
     "requestId",
     "correlationId",
 ];
-const SPAN_FIELDS: &[&str] = &["span_id", "spanId", "span-id"];
+const SPAN_FIELDS: &[&str] = &["dd.span_id", "dd_span_id", "span_id", "spanId", "span-id"];
 const ERROR_FIELDS: &[&str] = &["error", "err", "exception", "error_message"];
 const STACK_FIELDS: &[&str] = &["stack", "stackTrace", "stack_trace", "error.stack_trace"];
 const CALLER_FIELDS: &[&str] = &["caller", "source", "class", "method", "function"];
+
+// Etiquetas del tracer de Datadog dentro de un objeto `dd` anidado (se hoistean a campos propios)
+const DD_TAGS: &[&str] = &["trace_id", "span_id", "service", "env", "version"];
 
 // Campos "conocidos" que se extraen y no van en extra
 static KNOWN_FIELDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -164,6 +192,8 @@ static KNOWN_FIELDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         MESSAGE_FIELDS,
         TIMESTAMP_FIELDS,
         SERVICE_FIELDS,
+        ENV_FIELDS,
+        VERSION_FIELDS,
         TRACE_FIELDS,
         SPAN_FIELDS,
         ERROR_FIELDS,
@@ -348,6 +378,8 @@ pub fn parse_log_line(line: &str, pod_name: Option<&str>) -> ParsedLog {
             level: detect_level_from_text(trimmed),
             message: trimmed.to_string(),
             service: None,
+            env: None,
+            version: None,
             trace_id: None,
             span_id: None,
             caller: None,
@@ -362,25 +394,46 @@ pub fn parse_log_line(line: &str, pod_name: Option<&str>) -> ParsedLog {
         .map(normalize_timestamp)
         .or_else(|| k8s_timestamp.clone());
     let message = find_field(&record, MESSAGE_FIELDS).unwrap_or_default();
-    let field_level = level_from_value(find_value(&record, LEVEL_FIELDS));
-    let level = if field_level == LogLevel::UNKNOWN {
-        detect_level_from_text(&message)
-    } else {
-        field_level
-    };
+    let mut level = level_from_value(find_value(&record, LEVEL_FIELDS));
+    let mut status_is_level = false;
+    if level == LogLevel::UNKNOWN {
+        let status_level = level_from_status(&record);
+        if status_level != LogLevel::UNKNOWN {
+            level = status_level;
+            status_is_level = true;
+        }
+    }
+    if level == LogLevel::UNKNOWN {
+        level = detect_level_from_text(&message);
+    }
 
     let service = find_field(&record, SERVICE_FIELDS);
+    let env = find_field(&record, ENV_FIELDS);
+    let version = find_field(&record, VERSION_FIELDS);
     let trace_id = find_field(&record, TRACE_FIELDS);
     let span_id = find_field(&record, SPAN_FIELDS);
     let caller = find_field(&record, CALLER_FIELDS);
     let error = find_field(&record, ERROR_FIELDS);
     let stack_trace = find_field(&record, STACK_FIELDS);
 
-    // Todo lo que no es un campo conocido, en el orden del JSON original
-    let extra: Map<String, Value> = record
+    // Todo lo que no es un campo conocido, en el orden del JSON original.
+    // `status` solo se excluye cuando aportó el nivel.
+    let mut extra: Map<String, Value> = record
         .into_iter()
-        .filter(|(key, value)| !KNOWN_FIELDS.contains(key.as_str()) && !value.is_null())
+        .filter(|(key, value)| {
+            !KNOWN_FIELDS.contains(key.as_str())
+                && !value.is_null()
+                && !(status_is_level && key == "status")
+        })
         .collect();
+
+    // Las etiquetas del tracer ya son campos de primer nivel: se quitan de `dd` para no duplicar facetas
+    if let Some(Value::Object(dd)) = extra.get_mut("dd") {
+        dd.retain(|key, _| !DD_TAGS.contains(&key.as_str()));
+        if dd.is_empty() {
+            extra.remove("dd");
+        }
+    }
 
     ParsedLog {
         raw: trimmed.to_string(),
@@ -390,6 +443,8 @@ pub fn parse_log_line(line: &str, pod_name: Option<&str>) -> ParsedLog {
         level,
         message,
         service,
+        env,
+        version,
         trace_id,
         span_id,
         caller,

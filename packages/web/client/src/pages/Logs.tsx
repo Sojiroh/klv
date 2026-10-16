@@ -90,14 +90,14 @@ export default function Logs() {
             <>
               <span className="text-klv-accent">{pod}</span>
               {containerFromQuery && (
-                <span className="klv-badge bg-violet-500/10 text-violet-400 border border-violet-500/20 text-[10px]">
+                <span className="klv-badge bg-violet-50 text-violet-700 border border-violet-200 text-[10px]">
                   {containerFromQuery}
                 </span>
               )}
             </>
           )}
           {previous && (
-            <span className="klv-badge bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px]">
+            <span className="klv-badge bg-amber-50 text-amber-700 border border-amber-200 text-[10px]">
               previous
             </span>
           )}

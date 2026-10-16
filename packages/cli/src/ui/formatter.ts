@@ -165,6 +165,14 @@ export function formatLog(log: ParsedLog, options: Partial<FormatOptions> = {}):
     result += chalk.gray(` [trace:${log.traceId}]`);
   }
 
+  // Env y version
+  if (!opts.compact && (log.env || log.version)) {
+    const parts: string[] = [];
+    if (log.env) parts.push(`env:${log.env}`);
+    if (log.version) parts.push(`version:${log.version}`);
+    result += chalk.gray(` [${parts.join(' ')}]`);
+  }
+
   // Caller
   if (log.caller && !opts.compact) {
     result += chalk.gray(` @ ${log.caller}`);

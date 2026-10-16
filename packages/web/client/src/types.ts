@@ -10,6 +10,8 @@ export interface ParsedLog {
   level: LogLevel;
   message: string;
   service?: string;
+  env?: string;
+  version?: string;
   traceId?: string;
   spanId?: string;
   caller?: string;

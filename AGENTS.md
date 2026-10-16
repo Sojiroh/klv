@@ -139,7 +139,7 @@ All packages: `strict: true`, `esModuleInterop: true`, `skipLibCheck: true`,
 
 ### Tailwind / Design System
 
-- Dark theme with custom `klv-*` color palette defined in `tailwind.config.js`
+- Light, Datadog-like theme: custom `klv-*` palette in `tailwind.config.js` (lavender-gray `base`, white `surface`, purple `accent`, dark purple `nav`); level/status colors live only in `utils/log-utils.ts` (`levelConfig`, `statusStyles`). Palette classes on light surfaces use `-600`/`-700` text with `-50` fills and `-200` borders — never the dark-tuned `-400`/`/10` variants
 - Fonts: Syne (display), Outfit (body), JetBrains Mono (mono)
 - Custom animations: `fade-in`, `slide-up`, `slide-in-right`, `pulse-dot`
 - Noise texture overlay via `.noise-bg` utility class
@@ -176,3 +176,4 @@ Desktop builds run automatically via `.github/workflows/build-desktop.yml` using
 - The query language lives once in `packages/core/src/query.ts` (pure, no Node imports). The React client imports it through the `@klv/query` alias (Vite `resolve.alias` + tsconfig `paths`), the web server via `@klv/core`. Queries over kubelet data are evaluated client-side; the history API receives the parsed AST. Rust re-implements the evaluator in `src-tauri/src/query.rs` with identical semantics — keep both in sync
 - The log parser (`log-parser.ts` ↔ `parser/log_parser.rs`) and the query evaluator (`query.ts` ↔ `query.rs`) must stay behaviorally identical between TypeScript and Rust
 - Local history: web `packages/web/src/history/` (built-in `node:sqlite`, Node >= 22.13, data in `KLV_DATA_DIR` or `~/.klv`), desktop `src-tauri/src/history/` (`rusqlite`, app data dir). Same API (`/api/history/*` ↔ `history_*` commands); collectors start with the server/app
+- Datadog compatibility: the parsers map the dd-trace log-injection tags `dd.trace_id`, `dd.span_id`, `dd.service`, `dd.env`, `dd.version` (flat dotted keys, nested `dd` object, or `dd_*` underscore form) to `traceId`/`spanId`/`service`/`env`/`version` and strip them from `extra`; Datadog's `status` attribute is a text-only level alias (numeric values are HTTP codes and stay in `extra`). The query language accepts `env:`/`version:` and `@dd.*`/`dd.*` aliases of the reserved fields. History schema changes are append-only migrations (`user_version`) in both stores
