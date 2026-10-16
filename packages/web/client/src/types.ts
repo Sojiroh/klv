@@ -87,6 +87,8 @@ export interface CollectorTarget {
   container?: string;
   labelSelector?: string;
   enabled: boolean;
+  minLevel?: LogLevel;
+  exclude?: string[];
 }
 
 export interface CollectorTargetInput {
@@ -96,6 +98,8 @@ export interface CollectorTargetInput {
   container?: string;
   labelSelector?: string;
   enabled: boolean;
+  minLevel?: LogLevel;
+  exclude?: string[];
 }
 
 export interface RetentionSettings {

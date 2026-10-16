@@ -1,76 +1,44 @@
 import { Logger } from '@nestjs/common';
-import { createHash } from 'crypto';
+import { DuckDBInstance } from '@duckdb/node-api';
+import type { DuckDBConnection, DuckDBValue } from '@duckdb/node-api';
 import { mkdirSync } from 'fs';
+import { readdir, rename, rm, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { setImmediate as yieldToEventLoop } from 'timers/promises';
-import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite';
 import type { ParsedLog } from '@klv/core';
-import type { CollectorTarget, HistoryConfig, HistoryStats, RetentionSettings } from './history.types';
-
-export const DEFAULT_RETENTION: RetentionSettings = { maxAgeDays: 7, maxSizeMb: 1024 };
+import type { HistoryStats, RetentionSettings } from './history.types';
 
 const BATCH_ROWS = 500;
 const BATCH_INTERVAL_MS = 1000;
-const DELETE_BATCH = 5000;
-const VACUUM_PAGES = 2000;
 const STATS_TTL_MS = 5000;
-const PRUNE_TARGET_RATIO = 0.9;
+// Cubo de rollover = hora UTC; las líneas tardías de la hora abierta esperan este margen antes de exportarse
+const HOUR_US = 3_600_000_000;
+const ROLLOVER_GRACE_US = 120_000_000;
+const ROW_GROUP_SIZE = 122_880;
 
-// Cada migración lleva el esquema de PRAGMA user_version = índice + 1
-const MIGRATIONS: string[] = [
-  `
-  CREATE TABLE logs (
-    id INTEGER PRIMARY KEY,
-    context TEXT NOT NULL,
-    namespace TEXT NOT NULL,
-    pod TEXT NOT NULL,
-    container TEXT NOT NULL,
-    ts_us INTEGER NOT NULL,
-    raw_hash TEXT NOT NULL,
-    raw TEXT NOT NULL,
-    is_json INTEGER NOT NULL,
-    timestamp TEXT,
-    k8s_timestamp TEXT NOT NULL,
-    level TEXT NOT NULL,
-    message TEXT NOT NULL,
-    service TEXT,
-    trace_id TEXT,
-    span_id TEXT,
-    caller TEXT,
-    error TEXT,
-    stack_trace TEXT,
-    extra TEXT NOT NULL
-  );
-  CREATE UNIQUE INDEX logs_dedup ON logs (context, namespace, pod, container, ts_us, raw_hash);
-  CREATE INDEX logs_time ON logs (ts_us, id);
-  CREATE INDEX logs_ns_container_time ON logs (namespace, container, ts_us, id);
-  CREATE INDEX logs_ns_pod_time ON logs (namespace, pod, ts_us, id);
-  CREATE VIRTUAL TABLE logs_fts USING fts5(text, content='', contentless_delete=1, tokenize='trigram');
-  CREATE TABLE targets (
-    id TEXT PRIMARY KEY,
-    position INTEGER NOT NULL,
-    context TEXT NOT NULL,
-    namespace TEXT NOT NULL,
-    container TEXT,
-    label_selector TEXT,
-    enabled INTEGER NOT NULL
-  );
-  CREATE TABLE settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  ) WITHOUT ROWID;
-  `,
-  `
-  ALTER TABLE logs ADD COLUMN env TEXT;
-  ALTER TABLE logs ADD COLUMN version TEXT;
-  `,
-];
+// Orden de columnas idéntico en `current` y en cada archivo Parquet (importa para COPY y el appender)
+export const COLUMN_LIST = [
+  'id', 'ts_us', 'context', 'namespace', 'pod', 'container', 'k8s_timestamp', 'level', 'service', 'env', 'version',
+  'trace_id', 'span_id', 'caller', 'message', 'error', 'stack_trace', 'raw',
+].join(', ');
 
-const INSERT_COLUMNS = [
-  'context', 'namespace', 'pod', 'container', 'ts_us', 'raw_hash', 'raw', 'is_json', 'timestamp',
-  'k8s_timestamp', 'level', 'message', 'service', 'env', 'version', 'trace_id', 'span_id', 'caller', 'error',
-  'stack_trace', 'extra',
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS current (
+    id BIGINT NOT NULL, ts_us BIGINT NOT NULL,
+    context VARCHAR NOT NULL, namespace VARCHAR NOT NULL, pod VARCHAR NOT NULL, container VARCHAR NOT NULL,
+    k8s_timestamp VARCHAR NOT NULL, level VARCHAR NOT NULL,
+    service VARCHAR, env VARCHAR, version VARCHAR, trace_id VARCHAR, span_id VARCHAR, caller VARCHAR,
+    message VARCHAR NOT NULL, error VARCHAR, stack_trace VARCHAR,
+    raw VARCHAR NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS segments (
+    id BIGINT PRIMARY KEY, bucket_us BIGINT, file VARCHAR, rows BIGINT, bytes BIGINT,
+    min_ts_us BIGINT, max_ts_us BIGINT, min_id BIGINT, max_id BIGINT
+  )`,
+  `CREATE TABLE IF NOT EXISTS streams (
+    context VARCHAR, namespace VARCHAR, pod VARCHAR, container VARCHAR, last_ts_us BIGINT,
+    PRIMARY KEY (context, namespace, pod, container)
+  )`,
 ];
 
 export interface LogScope {
@@ -80,21 +48,40 @@ export interface LogScope {
   container: string;
 }
 
-interface PendingRow {
-  values: SQLInputValue[];
-  searchText: string;
+export type SqlParam = string | number;
+export type Row = Record<string, DuckDBValue>;
+
+// Consultas de solo lectura sobre una instantánea consistente (ver HistoryStore.read)
+export interface Reader {
+  all(sql: string, params?: SqlParam[]): Promise<Row[]>;
 }
 
-type Row = Record<string, SQLOutputValue>;
+export interface SegmentRef {
+  bucketUs: number;
+  bytes: number;
+  path: string;
+}
 
-// Texto sobre el que se evalúan las búsquedas de texto libre (Q1); el índice FTS contiene exactamente este texto.
-// Debe mantenerse idéntico al searchText del core (mismo orden de campos)
-export function buildSearchText(log: ParsedLog, container: string, namespace: string): string {
-  const head = [
-    log.message, log.error, log.stackTrace, log.service, log.env, log.version, log.traceId, log.spanId,
-    log.caller, log.podName, container, namespace,
-  ].filter(Boolean).join('\n');
-  return `${head}\n${JSON.stringify(log.extra)}`;
+interface PendingRow {
+  scope: LogScope;
+  tsUs: number;
+  k8sTimestamp: string;
+  log: ParsedLog;
+}
+
+// Ejecuta tareas de una en una en el orden de llegada; un fallo no bloquea a las siguientes
+class Mutex {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+}
+
+export function resolveDataDir(): string {
+  return process.env.KLV_DATA_DIR ?? join(homedir(), '.klv');
 }
 
 // Microsegundos desde epoch del prefijo RFC3339 de kubelet (hasta nanosegundos); null si no es válido.
@@ -108,193 +95,375 @@ export function parseKubeletMicros(timestamp: string): number | null {
   return seconds * 1000 + micros;
 }
 
+export function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function scopeKey(scope: LogScope): string {
+  return JSON.stringify([scope.context, scope.namespace, scope.pod, scope.container]);
+}
+
 export class HistoryStore {
   readonly path: string;
   private readonly logger = new Logger('HistoryStore');
-  private readonly db: DatabaseSync;
-  private readonly insertLog: StatementSync;
-  private readonly insertFts: StatementSync;
+  private readonly segmentsDir: string;
+  // Transacciones de escritura sobre la conexión `writer`
+  private readonly writeLock = new Mutex();
+  // rollover / prune / clear no se solapan entre sí (sí con ingesta y consultas)
+  private readonly maintenanceLock = new Mutex();
   private queue: PendingRow[] = [];
   private flushTimer: NodeJS.Timeout | undefined;
   private statsCache: { at: number; stats: HistoryStats } | undefined;
+  private nextId = 1;
+  private nextSegmentId = 1;
   private closed = false;
 
-  constructor(dataDir: string = process.env.KLV_DATA_DIR ?? join(homedir(), '.klv')) {
-    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    this.path = join(dataDir, 'history.db');
-    this.db = new DatabaseSync(this.path);
-    // auto_vacuum solo se puede fijar antes de crear tablas
-    this.db.exec('PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
-    this.migrate();
-    this.insertLog = this.db.prepare(
-      `INSERT OR IGNORE INTO logs (${INSERT_COLUMNS.join(', ')}) VALUES (${INSERT_COLUMNS.map(() => '?').join(', ')})`,
-    );
-    this.insertFts = this.db.prepare('INSERT INTO logs_fts (rowid, text) VALUES (?, ?)');
+  private constructor(
+    dataDir: string,
+    private readonly instance: DuckDBInstance,
+    private readonly writer: DuckDBConnection,
+  ) {
+    this.path = join(dataDir, 'history.duckdb');
+    this.segmentsDir = join(dataDir, 'segments');
   }
 
-  private migrate(): void {
-    const row = this.db.prepare('PRAGMA user_version').get();
-    const current = Number(row?.user_version ?? 0);
-    if (current > MIGRATIONS.length) {
-      throw new Error(`La base de datos del historial (${this.path}) es de una versión más reciente de klv`);
-    }
-    for (let version = current; version < MIGRATIONS.length; version++) {
-      this.transaction(() => {
-        this.db.exec(MIGRATIONS[version]);
-        this.db.exec(`PRAGMA user_version = ${version + 1}`);
-      });
-    }
-  }
-
-  private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
+  static async open(dataDir: string = resolveDataDir()): Promise<HistoryStore> {
+    mkdirSync(join(dataDir, 'segments'), { recursive: true, mode: 0o700 });
+    const instance = await DuckDBInstance.create(join(dataDir, 'history.duckdb'), { memory_limit: '1GB', threads: '4' });
+    const writer = await instance.connect();
+    const store = new HistoryStore(dataDir, instance, writer);
     try {
-      const result = fn();
-      this.db.exec('COMMIT');
-      return result;
+      await store.init();
     } catch (err) {
-      this.db.exec('ROLLBACK');
+      writer.closeSync();
+      instance.closeSync();
       throw err;
     }
+    return store;
   }
 
-  // ---- Inserción por lotes (la cola nunca supera BATCH_ROWS filas) ----
+  private async init(): Promise<void> {
+    for (const ddl of SCHEMA) await this.writer.run(ddl);
+    await this.recoverSegments();
 
+    const [ids] = await this.all(
+      `SELECT coalesce((SELECT max(id) FROM current), 0) AS current_id,
+              coalesce((SELECT max(max_id) FROM segments), 0) AS segment_max_id,
+              coalesce((SELECT max(id) FROM segments), 0) AS segment_id`,
+    );
+    this.nextId = Math.max(Number(ids.current_id), Number(ids.segment_max_id)) + 1;
+    this.nextSegmentId = Number(ids.segment_id) + 1;
+  }
+
+  // Recuperación tras un cierre abrupto: .tmp huérfanos, Parquet sin fila en `segments` (sus filas siguen en
+  // `current`) y filas de `segments` cuyo archivo desapareció
+  private async recoverSegments(): Promise<void> {
+    const registered = await this.all('SELECT id, file FROM segments');
+    const known = new Set(registered.map((row) => String(row.file)));
+    const present = new Set<string>();
+    for (const name of await readdir(this.segmentsDir)) {
+      if (name.endsWith('.tmp') || (name.endsWith('.parquet') && !known.has(name))) {
+        await rm(join(this.segmentsDir, name), { force: true });
+        this.logger.log(`Segmento huérfano eliminado: ${name}`);
+      } else {
+        present.add(name);
+      }
+    }
+    for (const row of registered) {
+      if (present.has(String(row.file))) continue;
+      this.logger.warn(`Falta el segmento ${String(row.file)}: se elimina su registro`);
+      await this.writer.run('DELETE FROM segments WHERE id = ?', [Number(row.id)]);
+    }
+  }
+
+  // ---- Inserción por lotes ----
+
+  // Síncrono para quien llama: encola en memoria y programa el volcado a `current`
   enqueue(scope: LogScope, log: ParsedLog): void {
     if (this.closed) return;
     const micros = log.k8sTimestamp !== undefined ? parseKubeletMicros(log.k8sTimestamp) : null;
     // Sin prefijo de kubelet válido se usa la hora de recepción
     const tsUs = micros ?? Date.now() * 1000;
     const k8sTimestamp = micros !== null ? log.k8sTimestamp as string : new Date(tsUs / 1000).toISOString();
-
-    this.queue.push({
-      values: [
-        scope.context, scope.namespace, scope.pod, scope.container, tsUs,
-        createHash('sha1').update(log.raw).digest('hex').slice(0, 24),
-        log.raw, log.isJson ? 1 : 0, log.timestamp ?? null, k8sTimestamp, log.level, log.message,
-        log.service ?? null, log.env ?? null, log.version ?? null, log.traceId ?? null, log.spanId ?? null,
-        log.caller ?? null,
-        log.error ?? null, log.stackTrace ?? null, JSON.stringify(log.extra),
-      ],
-      searchText: buildSearchText({ ...log, podName: scope.pod }, scope.container, scope.namespace),
-    });
+    this.queue.push({ scope, tsUs, k8sTimestamp, log });
 
     if (this.queue.length >= BATCH_ROWS) {
-      this.flush();
+      void this.flush();
     } else if (this.flushTimer === undefined) {
-      this.flushTimer = setTimeout(() => this.flush(), BATCH_INTERVAL_MS);
+      this.flushTimer = setTimeout(() => void this.flush(), BATCH_INTERVAL_MS);
       this.flushTimer.unref();
     }
   }
 
-  flush(): void {
+  // Un volcado a la vez; la cola se toma al empezar, así recoge lo encolado mientras esperaba. Nunca rechaza.
+  flush(): Promise<void> {
     if (this.flushTimer !== undefined) {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
     }
-    if (this.queue.length === 0 || this.closed) return;
-    const rows = this.queue;
-    this.queue = [];
+    return this.writeLock.run(async () => {
+      if (this.queue.length === 0 || this.closed) return;
+      const rows = this.queue;
+      this.queue = [];
+      try {
+        await this.insertRows(rows);
+        this.statsCache = undefined;
+      } catch (err) {
+        this.logger.error(`No se pudo guardar un lote de ${rows.length} líneas: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+  }
+
+  private async rollback(): Promise<void> {
+    await this.writer.run('ROLLBACK').catch(() => undefined);
+  }
+
+  // Una transacción: appender sobre `current` + upsert de `streams` por cada contenedor del lote
+  private async insertRows(rows: PendingRow[]): Promise<void> {
+    await this.writer.run('BEGIN TRANSACTION');
     try {
-      this.transaction(() => {
-        for (const row of rows) {
-          const result = this.insertLog.run(...row.values);
-          // Las filas duplicadas (reanudación) se ignoran y no se indexan
-          if (result.changes > 0) this.insertFts.run(Number(result.lastInsertRowid), row.searchText);
+      const appender = await this.writer.createAppender('current');
+      const lastBySource = new Map<string, { scope: LogScope; tsUs: number }>();
+      try {
+        const text = (value: string | undefined): void => {
+          if (value === undefined) appender.appendNull();
+          else appender.appendVarchar(value);
+        };
+        for (const { scope, tsUs, k8sTimestamp, log } of rows) {
+          appender.appendBigInt(BigInt(this.nextId++));
+          appender.appendBigInt(BigInt(tsUs));
+          appender.appendVarchar(scope.context);
+          appender.appendVarchar(scope.namespace);
+          appender.appendVarchar(scope.pod);
+          appender.appendVarchar(scope.container);
+          appender.appendVarchar(k8sTimestamp);
+          appender.appendVarchar(log.level);
+          text(log.service);
+          text(log.env);
+          text(log.version);
+          text(log.traceId);
+          text(log.spanId);
+          text(log.caller);
+          appender.appendVarchar(log.message);
+          text(log.error);
+          text(log.stackTrace);
+          appender.appendVarchar(log.raw);
+          appender.endRow();
+
+          const key = scopeKey(scope);
+          const previous = lastBySource.get(key);
+          if (previous === undefined || tsUs > previous.tsUs) lastBySource.set(key, { scope, tsUs });
         }
-      });
-      this.statsCache = undefined;
+        appender.flushSync();
+      } finally {
+        appender.closeSync();
+      }
+
+      for (const { scope, tsUs } of lastBySource.values()) {
+        await this.writer.run(
+          `INSERT INTO streams (context, namespace, pod, container, last_ts_us) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (context, namespace, pod, container) DO UPDATE SET last_ts_us = greatest(last_ts_us, excluded.last_ts_us)`,
+          [scope.context, scope.namespace, scope.pod, scope.container, tsUs],
+        );
+      }
+      await this.writer.run('COMMIT');
     } catch (err) {
-      this.logger.error(`No se pudo guardar un lote de ${rows.length} líneas: ${err instanceof Error ? err.message : String(err)}`);
+      await this.rollback();
+      throw err;
     }
   }
 
-  // Último timestamp de kubelet (µs) guardado para un contenedor; null si no hay datos
-  lastTimestampUs(scope: LogScope): number | null {
-    this.flush();
-    const row = this.db
-      .prepare('SELECT max(ts_us) AS t FROM logs WHERE context = ? AND namespace = ? AND pod = ? AND container = ?')
-      .get(scope.context, scope.namespace, scope.pod, scope.container);
-    return typeof row?.t === 'number' ? row.t : null;
-  }
-
-  // ---- Consultas ----
-
-  all(sql: string, params: SQLInputValue[]): Row[] {
-    this.flush();
-    return this.db.prepare(sql).all(...params);
-  }
-
-  // ---- Configuración ----
-
-  loadConfig(): HistoryConfig {
-    const targets: CollectorTarget[] = this.db
-      .prepare('SELECT id, context, namespace, container, label_selector, enabled FROM targets ORDER BY position')
-      .all()
-      .map((row) => {
-        const container = typeof row.container === 'string' ? row.container : undefined;
-        const labelSelector = typeof row.label_selector === 'string' ? row.label_selector : undefined;
-        return {
-          id: String(row.id),
-          context: String(row.context),
-          namespace: String(row.namespace),
-          ...(container !== undefined && { container }),
-          ...(labelSelector !== undefined && { labelSelector }),
-          enabled: row.enabled === 1,
-        };
-      });
-
-    const settings = new Map(
-      this.db.prepare('SELECT key, value FROM settings').all().map((row): [string, number] => [String(row.key), Number(row.value)]),
+  // Último timestamp de kubelet (µs) guardado (o aún en cola) para un contenedor; null si no hay datos
+  async lastTimestampUs(scope: LogScope): Promise<number | null> {
+    let last: number | null = null;
+    for (const row of this.queue) {
+      if (row.scope.context === scope.context && row.scope.namespace === scope.namespace
+        && row.scope.pod === scope.pod && row.scope.container === scope.container) {
+        last = last === null ? row.tsUs : Math.max(last, row.tsUs);
+      }
+    }
+    const rows = await this.all(
+      'SELECT last_ts_us FROM streams WHERE context = ? AND namespace = ? AND pod = ? AND container = ?',
+      [scope.context, scope.namespace, scope.pod, scope.container],
     );
-    return {
-      targets,
-      retention: {
-        maxAgeDays: settings.get('retention.maxAgeDays') ?? DEFAULT_RETENTION.maxAgeDays,
-        maxSizeMb: settings.get('retention.maxSizeMb') ?? DEFAULT_RETENTION.maxSizeMb,
-      },
-    };
+    if (rows.length > 0 && rows[0].last_ts_us !== null) {
+      const stored = Number(rows[0].last_ts_us);
+      last = last === null ? stored : Math.max(last, stored);
+    }
+    return last;
   }
 
-  saveConfig(config: HistoryConfig): void {
-    this.transaction(() => {
-      this.db.exec('DELETE FROM targets');
-      const insertTarget = this.db.prepare(
-        'INSERT INTO targets (id, position, context, namespace, container, label_selector, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  // ---- Lectura (conexiones propias: no bloquean ni son bloqueadas por la de escritura) ----
+
+  async all(sql: string, params?: SqlParam[]): Promise<Row[]> {
+    const conn = await this.instance.connect();
+    try {
+      return (await conn.runAndReadAll(sql, params)).getRowObjects();
+    } finally {
+      conn.closeSync();
+    }
+  }
+
+  // Todas las consultas de `fn` ven la misma instantánea de `current` y `segments`, aunque haya un rollover en curso
+  async read<T>(fn: (reader: Reader) => Promise<T>): Promise<T> {
+    const conn = await this.instance.connect();
+    try {
+      await conn.run('BEGIN TRANSACTION');
+      return await fn({ all: async (sql, params) => (await conn.runAndReadAll(sql, params)).getRowObjects() });
+    } finally {
+      // Cerrar la conexión descarta la transacción de solo lectura
+      conn.closeSync();
+    }
+  }
+
+  // Segmentos que solapan [fromUs, toUs), del más reciente al más antiguo
+  async listSegments(reader: Reader, fromUs?: number, toUs?: number): Promise<SegmentRef[]> {
+    const conditions: string[] = [];
+    const params: SqlParam[] = [];
+    if (fromUs !== undefined) {
+      conditions.push('max_ts_us >= ?');
+      params.push(fromUs);
+    }
+    if (toUs !== undefined) {
+      conditions.push('min_ts_us < ?');
+      params.push(toUs);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await reader.all(
+      `SELECT bucket_us, file, bytes FROM segments ${where} ORDER BY bucket_us DESC, id DESC`,
+      params,
+    );
+    return rows.map((row) => ({
+      bucketUs: Number(row.bucket_us),
+      bytes: Number(row.bytes),
+      path: join(this.segmentsDir, String(row.file)),
+    }));
+  }
+
+  // ---- Rollover: `current` → segmentos Parquet horarios ----
+
+  rollover(): Promise<void> {
+    return this.maintenanceLock.run(() => this.exportClosedBuckets());
+  }
+
+  private async exportClosedBuckets(): Promise<void> {
+    if (this.closed) return;
+    const limit = Math.floor((Date.now() * 1000 - ROLLOVER_GRACE_US) / HOUR_US) * HOUR_US;
+    const buckets = await this.all(
+      `SELECT ts_us - ts_us % ${HOUR_US} AS bucket FROM current WHERE ts_us < ? GROUP BY 1 ORDER BY 1`,
+      [limit],
+    );
+    let exported = false;
+    for (const row of buckets) {
+      const bucketUs = Number(row.bucket);
+      try {
+        exported = await this.exportBucket(bucketUs) || exported;
+      } catch (err) {
+        this.logger.error(`No se pudo exportar el segmento ${this.bucketStamp(bucketUs)}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (exported) await this.checkpoint();
+  }
+
+  private bucketStamp(bucketUs: number): string {
+    return new Date(bucketUs / 1000).toISOString().slice(0, 13).replaceAll('-', '');
+  }
+
+  // Exporta las filas del cubo con id <= maxId (instantánea); las añadidas después quedan para el siguiente rollover
+  private async exportBucket(bucketUs: number): Promise<boolean> {
+    const inBucket = `ts_us >= ${bucketUs} AND ts_us < ${bucketUs + HOUR_US}`;
+    const [top] = await this.all(`SELECT max(id) AS max_id FROM current WHERE ${inBucket}`);
+    if (top.max_id === null) return false;
+    const maxId = Number(top.max_id);
+    const selection = `${inBucket} AND id <= ${maxId}`;
+
+    const [stats] = await this.all(
+      `SELECT count(*) AS rows, min(ts_us) AS min_ts, max(ts_us) AS max_ts, min(id) AS min_id FROM current WHERE ${selection}`,
+    );
+    const segmentId = this.nextSegmentId++;
+    const file = `${this.bucketStamp(bucketUs)}-${segmentId}.parquet`;
+    const finalPath = join(this.segmentsDir, file);
+    const tmpPath = `${finalPath}.tmp`;
+
+    // Conexión propia: la ingesta sigue escribiendo en `current` mientras se comprime
+    const conn = await this.instance.connect();
+    try {
+      await conn.run(
+        `COPY (SELECT ${COLUMN_LIST} FROM current WHERE ${selection} ORDER BY ts_us, id)
+         TO ${sqlString(tmpPath)} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE ${ROW_GROUP_SIZE})`,
       );
-      config.targets.forEach((target, position) => {
-        insertTarget.run(
-          target.id, position, target.context, target.namespace,
-          target.container ?? null, target.labelSelector ?? null, target.enabled ? 1 : 0,
-        );
+    } catch (err) {
+      await rm(tmpPath, { force: true });
+      throw err;
+    } finally {
+      conn.closeSync();
+    }
+    await rename(tmpPath, finalPath);
+    const { size } = await stat(finalPath);
+
+    try {
+      await this.writeLock.run(async () => {
+        await this.writer.run('BEGIN TRANSACTION');
+        try {
+          await this.writer.run(
+            'INSERT INTO segments (id, bucket_us, file, rows, bytes, min_ts_us, max_ts_us, min_id, max_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [segmentId, bucketUs, file, Number(stats.rows), size, Number(stats.min_ts), Number(stats.max_ts), Number(stats.min_id), maxId],
+          );
+          await this.writer.run(`DELETE FROM current WHERE ${selection}`);
+          await this.writer.run('COMMIT');
+        } catch (err) {
+          await this.rollback();
+          throw err;
+        }
       });
-      const upsert = this.db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-      upsert.run('retention.maxAgeDays', String(config.retention.maxAgeDays));
-      upsert.run('retention.maxSizeMb', String(config.retention.maxSizeMb));
-    });
+    } catch (err) {
+      await rm(finalPath, { force: true });
+      throw err;
+    }
+    this.statsCache = undefined;
+    return true;
+  }
+
+  private async checkpoint(): Promise<void> {
+    try {
+      await this.writeLock.run(() => this.writer.run('CHECKPOINT'));
+    } catch (err) {
+      this.logger.warn(`CHECKPOINT no completado: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // ---- Estadísticas ----
 
-  private pragmaNumber(name: string): number {
-    const row = this.db.prepare(`PRAGMA ${name}`).get();
-    return Number(row?.[name] ?? 0);
+  private async databaseBytes(): Promise<number> {
+    let total = 0;
+    for (const file of [this.path, `${this.path}.wal`]) {
+      try {
+        total += (await stat(file)).size;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+    return total;
   }
 
-  // El recuento de filas es O(n): se cachea unos segundos
-  stats(): HistoryStats {
-    this.flush();
+  // El recuento y los rangos recorren columnas de `current`: se cachea unos segundos
+  async stats(): Promise<HistoryStats> {
     const now = Date.now();
     if (this.statsCache !== undefined && now - this.statsCache.at < STATS_TTL_MS) return this.statsCache.stats;
 
-    const range = this.db.prepare('SELECT min(ts_us) AS oldest, max(ts_us) AS newest, count(*) AS rows FROM logs').get();
-    const toIso = (value: SQLOutputValue | undefined): string | undefined =>
-      typeof value === 'number' ? new Date(value / 1000).toISOString() : undefined;
-    const oldest = toIso(range?.oldest);
-    const newest = toIso(range?.newest);
+    const [segments] = await this.all(
+      'SELECT coalesce(sum(rows), 0) AS rows, coalesce(sum(bytes), 0) AS bytes, min(min_ts_us) AS oldest, max(max_ts_us) AS newest FROM segments',
+    );
+    const [current] = await this.all('SELECT count(*) AS rows, min(ts_us) AS oldest, max(ts_us) AS newest FROM current');
+    const bounds = (key: 'oldest' | 'newest', pick: (a: number, b: number) => number): string | undefined => {
+      const values = [segments[key], current[key]].filter((value) => value !== null).map(Number);
+      return values.length > 0 ? new Date(values.reduce((a, b) => pick(a, b)) / 1000).toISOString() : undefined;
+    };
+    const oldest = bounds('oldest', Math.min);
+    const newest = bounds('newest', Math.max);
     const stats: HistoryStats = {
-      rows: Number(range?.rows ?? 0),
-      sizeBytes: this.pragmaNumber('page_count') * this.pragmaNumber('page_size'),
+      rows: Number(segments.rows) + Number(current.rows),
+      sizeBytes: Number(segments.bytes) + await this.databaseBytes(),
       ...(oldest !== undefined && { oldest }),
       ...(newest !== undefined && { newest }),
     };
@@ -304,65 +473,88 @@ export class HistoryStore {
 
   // ---- Retención ----
 
-  private usedBytes(): number {
-    return (this.pragmaNumber('page_count') - this.pragmaNumber('freelist_count')) * this.pragmaNumber('page_size');
-  }
-
-  private deleteRows(select: StatementSync, ...params: SQLInputValue[]): number {
-    const ids = select.all(...params).map((row) => Number(row.id));
-    if (ids.length === 0) return 0;
-    this.transaction(() => {
-      const deleteFts = this.db.prepare('DELETE FROM logs_fts WHERE rowid = ?');
-      const deleteLog = this.db.prepare('DELETE FROM logs WHERE id = ?');
-      for (const id of ids) {
-        deleteFts.run(id);
-        deleteLog.run(id);
-      }
-    });
+  // Borra un segmento: primero su registro (una transacción mínima) y luego el archivo
+  private async dropSegment(id: number, file: string): Promise<void> {
+    await this.writeLock.run(() => this.writer.run('DELETE FROM segments WHERE id = ?', [id]));
+    await rm(join(this.segmentsDir, file), { force: true });
     this.statsCache = undefined;
-    return ids.length;
   }
 
-  private async reclaim(): Promise<void> {
-    while (!this.closed && this.pragmaNumber('freelist_count') > 0) {
-      this.db.exec(`PRAGMA incremental_vacuum(${VACUUM_PAGES})`);
-      await yieldToEventLoop();
-    }
-    if (!this.closed) this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  }
-
-  // Borra por antigüedad y luego por tamaño (hasta el 90% del límite), cediendo el event loop entre lotes
+  // Por antigüedad y luego por tamaño (el más antiguo primero); borrar archivos no bloquea la ingesta ni las consultas.
+  // Tras podar se exporta lo que ya esté cerrado en `current`
   async prune(retention: RetentionSettings, nowMs: number = Date.now()): Promise<void> {
-    this.flush();
+    await this.maintenanceLock.run(() => this.deleteExpired(retention, nowMs));
+    await this.rollover();
+  }
+
+  private async deleteExpired(retention: RetentionSettings, nowMs: number): Promise<void> {
+    if (this.closed) return;
     const cutoffUs = (nowMs - retention.maxAgeDays * 86_400_000) * 1000;
-    const older = this.db.prepare('SELECT id FROM logs WHERE ts_us < ? ORDER BY ts_us, id LIMIT ?');
-    while (!this.closed && this.deleteRows(older, cutoffUs, DELETE_BATCH) > 0) await yieldToEventLoop();
+    let deleted = false;
+
+    const expired = await this.all('SELECT id, file FROM segments WHERE max_ts_us < ? ORDER BY bucket_us, id', [cutoffUs]);
+    for (const segment of expired) {
+      await this.dropSegment(Number(segment.id), String(segment.file));
+      deleted = true;
+    }
+    const removed = await this.writeLock.run(async () => {
+      const result = await this.writer.run('DELETE FROM current WHERE ts_us < ?', [cutoffUs]);
+      await this.writer.run('DELETE FROM streams WHERE last_ts_us < ?', [cutoffUs]);
+      return result.rowsChanged;
+    });
+    if (removed > 0) {
+      deleted = true;
+      this.statsCache = undefined;
+    }
 
     const maxBytes = retention.maxSizeMb * 1024 * 1024;
-    if (!this.closed && this.usedBytes() > maxBytes) {
-      const oldest = this.db.prepare('SELECT id FROM logs ORDER BY ts_us, id LIMIT ?');
-      while (!this.closed && this.usedBytes() > maxBytes * PRUNE_TARGET_RATIO) {
-        if (this.deleteRows(oldest, DELETE_BATCH) === 0) break;
-        await yieldToEventLoop();
-      }
+    const [total] = await this.all('SELECT coalesce(sum(bytes), 0) AS bytes FROM segments');
+    let segmentBytes = Number(total.bytes);
+    const fixedBytes = await this.databaseBytes();
+    while (!this.closed && fixedBytes + segmentBytes > maxBytes) {
+      const [oldest] = await this.all('SELECT id, file, bytes FROM segments ORDER BY bucket_us ASC, id ASC LIMIT 1');
+      if (oldest === undefined) break;
+      await this.dropSegment(Number(oldest.id), String(oldest.file));
+      segmentBytes -= Number(oldest.bytes);
+      deleted = true;
     }
-    await this.reclaim();
+
+    if (deleted) await this.checkpoint();
   }
 
   async clear(): Promise<void> {
-    this.queue = [];
-    this.transaction(() => {
-      this.db.exec('DELETE FROM logs_fts');
-      this.db.exec('DELETE FROM logs');
+    await this.maintenanceLock.run(async () => {
+      this.queue = [];
+      await this.writeLock.run(async () => {
+        await this.writer.run('BEGIN TRANSACTION');
+        try {
+          await this.writer.run('DELETE FROM segments');
+          await this.writer.run('DELETE FROM current');
+          await this.writer.run('DELETE FROM streams');
+          await this.writer.run('COMMIT');
+        } catch (err) {
+          await this.rollback();
+          throw err;
+        }
+      });
+      for (const name of await readdir(this.segmentsDir)) await rm(join(this.segmentsDir, name), { force: true });
+      this.statsCache = undefined;
+      await this.checkpoint();
     });
-    this.statsCache = undefined;
-    await this.reclaim();
   }
 
-  close(): void {
+  // Cierre ordenado: vuelca la cola, exporta lo cerrado, CHECKPOINT y libera DuckDB
+  async close(): Promise<void> {
     if (this.closed) return;
-    this.flush();
+    await this.flush();
+    try {
+      await this.rollover();
+    } catch (err) {
+      this.logger.error(`Rollover final fallido: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await this.checkpoint();
     this.closed = true;
-    this.db.close();
+    this.writer.closeSync();
+    this.instance.closeSync();
   }
 }

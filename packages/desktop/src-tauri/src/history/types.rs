@@ -2,20 +2,26 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::parser::log_parser::ParsedLog;
+use crate::parser::log_parser::{LogLevel, ParsedLog};
 use crate::query::QueryNode;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectorTarget {
     pub id: String,
     pub context: String,
     pub namespace: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
     pub enabled: bool,
+    /// Descarta las líneas con nivel conocido por debajo de este (UNKNOWN siempre se conserva).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_level: Option<LogLevel>,
+    /// Descarta las líneas cuyo mensaje contiene alguno de estos textos (distingue mayúsculas).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +33,9 @@ pub struct CollectorTargetInput {
     pub container: Option<String>,
     pub label_selector: Option<String>,
     pub enabled: bool,
+    /// Texto crudo para poder responder con un mensaje de validación propio.
+    pub min_level: Option<String>,
+    pub exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,11 +50,26 @@ pub const DEFAULT_RETENTION: RetentionSettings = RetentionSettings {
     max_size_mb: 1024,
 };
 
-#[derive(Debug, Clone, Serialize)]
+fn default_retention() -> RetentionSettings {
+    DEFAULT_RETENTION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryConfig {
+    #[serde(default)]
     pub targets: Vec<CollectorTarget>,
+    #[serde(default = "default_retention")]
     pub retention: RetentionSettings,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            retention: DEFAULT_RETENTION,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

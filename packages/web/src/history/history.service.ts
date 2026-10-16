@@ -1,9 +1,10 @@
 import { Injectable, Logger, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common';
 import { KubeClient } from '@klv/core';
 import { TargetCollector } from './history-collector';
-import { normalizeConfig } from './history-config';
+import { loadConfig, normalizeConfig, saveConfig } from './history-config';
+import { migrateLegacyHistory } from './history-legacy';
 import { queryHistory } from './history-query';
-import { HistoryStore } from './history-store';
+import { HistoryStore, resolveDataDir } from './history-store';
 import type {
   CollectorTarget,
   HistoryConfig,
@@ -11,48 +12,57 @@ import type {
   HistoryStatus,
 } from './history.types';
 
-const PRUNE_INTERVAL_MS = 10 * 60 * 1000;
+// Rollover de segmentos cerrados + retención
+const MAINTENANCE_INTERVAL_MS = 60 * 1000;
+
+function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
+  return a === b || (a !== undefined && b !== undefined && a.length === b.length && a.every((item, i) => item === b[i]));
+}
 
 function sameCollection(a: CollectorTarget, b: CollectorTarget): boolean {
   return a.context === b.context
     && a.namespace === b.namespace
     && a.container === b.container
-    && a.labelSelector === b.labelSelector;
+    && a.labelSelector === b.labelSelector
+    && a.minLevel === b.minLevel
+    && sameList(a.exclude, b.exclude);
 }
 
 @Injectable()
 export class HistoryService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(HistoryService.name);
+  private readonly dataDir = resolveDataDir();
   private readonly collectors = new Map<string, TargetCollector>();
   private store!: HistoryStore;
   private config!: HistoryConfig;
-  private pruneTimer: NodeJS.Timeout | undefined;
-  private pruning = false;
+  private maintenanceTimer: NodeJS.Timeout | undefined;
+  private maintaining = false;
 
-  onModuleInit(): void {
-    this.store = new HistoryStore();
-    this.config = this.store.loadConfig();
+  async onModuleInit(): Promise<void> {
+    await migrateLegacyHistory(this.dataDir);
+    this.config = loadConfig(this.dataDir);
+    this.store = await HistoryStore.open(this.dataDir);
     for (const target of this.config.targets) this.startCollector(target);
 
-    this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
-    this.pruneTimer.unref();
-    this.prune();
+    this.maintenanceTimer = setInterval(() => this.maintain(), MAINTENANCE_INTERVAL_MS);
+    this.maintenanceTimer.unref();
+    this.maintain();
   }
 
-  onApplicationShutdown(): void {
-    clearInterval(this.pruneTimer);
+  async onApplicationShutdown(): Promise<void> {
+    clearInterval(this.maintenanceTimer);
     for (const collector of this.collectors.values()) collector.stop();
     this.collectors.clear();
-    this.store.close();
+    await this.store.close();
   }
 
   getConfig(): HistoryConfig {
     return this.config;
   }
 
-  setConfig(body: unknown): HistoryConfig {
+  async setConfig(body: unknown): Promise<HistoryConfig> {
     const next = normalizeConfig(body, new KubeClient().getContexts());
-    this.store.saveConfig(next);
+    await saveConfig(this.dataDir, next);
     const previous = this.config;
     this.config = next;
 
@@ -66,14 +76,14 @@ export class HistoryService implements OnModuleInit, OnApplicationShutdown {
     for (const target of next.targets) this.startCollector(target);
 
     if (previous.retention.maxAgeDays !== next.retention.maxAgeDays || previous.retention.maxSizeMb !== next.retention.maxSizeMb) {
-      this.prune();
+      this.maintain();
     }
     return next;
   }
 
-  getStatus(): HistoryStatus {
+  async getStatus(): Promise<HistoryStatus> {
     return {
-      stats: this.store.stats(),
+      stats: await this.store.stats(),
       collectors: this.config.targets.map(
         (target) => this.collectors.get(target.id)?.status() ?? { targetId: target.id, state: 'disabled', streams: [] },
       ),
@@ -97,17 +107,18 @@ export class HistoryService implements OnModuleInit, OnApplicationShutdown {
     collector.start();
   }
 
-  // Poda por antigüedad y tamaño según la retención vigente; una sola poda a la vez
-  private prune(): void {
-    if (this.pruning) return;
-    this.pruning = true;
+  // Rollover y poda por antigüedad/tamaño según la retención vigente; una pasada a la vez
+  private maintain(): void {
+    if (this.maintaining) return;
+    this.maintaining = true;
     this.store
-      .prune(this.config.retention)
+      .rollover()
+      .then(() => this.store.prune(this.config.retention))
       .catch((err: unknown) => {
-        this.logger.error(`Error al podar el historial: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`Error en el mantenimiento del historial: ${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
-        this.pruning = false;
+        this.maintaining = false;
       });
   }
 }

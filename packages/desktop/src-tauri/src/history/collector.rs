@@ -21,7 +21,7 @@ use super::db::{blocking, micros_to_iso, now_micros, NewRow, Store};
 use super::types::{CollectorStatus, CollectorStream, CollectorTarget, StreamState, TargetState};
 use super::writer::{WriterMsg, WriterTx};
 use crate::error::kube_error_message;
-use crate::parser::log_parser::parse_log_line;
+use crate::parser::log_parser::{level_priority, parse_log_line, LogLevel, ParsedLog};
 
 const INITIAL_TAIL: i64 = 1000;
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -37,14 +37,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// FNV-1a de 64 bits: hash estable entre ejecuciones para la clave de deduplicación.
-fn line_hash(bytes: &[u8]) -> i64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash as i64
+/// Timestamp de kubelet (µs y texto original) del prefijo de la línea, si es válido.
+fn kubelet_time(log: &ParsedLog) -> Option<(i64, String)> {
+    let text = log.k8s_timestamp.as_deref()?;
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|d| (d.timestamp_micros(), text.to_string()))
 }
 
 // --- Estado observable ---
@@ -160,28 +158,30 @@ struct Follower {
     container: String,
     /// El pod terminó (Succeeded/Failed): al cerrarse el stream no hay nada más que seguir.
     terminal: Arc<AtomicBool>,
+    /// Filtros del target: nivel mínimo y subcadenas excluidas del mensaje.
+    min_level: Option<LogLevel>,
+    exclude: Vec<String>,
 }
 
 impl Follower {
-    fn build_row(&self, line: &str) -> NewRow {
-        let log = parse_log_line(line, Some(&self.pod));
-        let parsed = log.k8s_timestamp.as_deref().and_then(|text| {
-            DateTime::parse_from_rfc3339(text)
-                .ok()
-                .map(|d| (d.timestamp_micros(), text.to_string()))
-        });
-        // Sin timestamp de kubelet utilizable se usa la hora de llegada.
-        let (ts, k8s_timestamp) = parsed.unwrap_or_else(|| {
-            let now = now_micros();
-            (now, micros_to_iso(now).unwrap_or_default())
-        });
+    /// Filtros del colector (se aplican tras parsear, antes de encolar): las líneas sin nivel
+    /// conocido (continuaciones de stack trace, texto plano) se conservan.
+    fn accepts(&self, log: &ParsedLog) -> bool {
+        if let Some(min) = &self.min_level {
+            if log.level != LogLevel::UNKNOWN && level_priority(&log.level) < level_priority(min) {
+                return false;
+            }
+        }
+        !self.exclude.iter().any(|pattern| log.message.contains(pattern.as_str()))
+    }
+
+    fn build_row(&self, log: ParsedLog, ts_us: i64, k8s_timestamp: String) -> NewRow {
         NewRow {
             context: self.context.clone(),
             namespace: self.namespace.clone(),
             pod: self.pod.clone(),
             container: self.container.clone(),
-            ts,
-            line_hash: line_hash(log.raw.as_bytes()),
+            ts_us,
             k8s_timestamp,
             log,
         }
@@ -202,6 +202,10 @@ impl Follower {
             .set_stream(&self.pod, &self.container, StreamState::Following, None);
         futures::pin_mut!(reader);
 
+        // Al reconectar, `sinceTime` (a segundos) repite líneas ya vistas: se descartan las
+        // que no superan la última posición conocida al empezar esta conexión (guardada o
+        // aún sin volcar a disco).
+        let floor = *last_us;
         let mut buf: Vec<u8> = Vec::new();
         let mut last_touch: Option<Instant> = None;
         loop {
@@ -214,15 +218,31 @@ impl Follower {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let row = self.build_row(line);
-                    *last_us = Some(last_us.map_or(row.ts, |previous| previous.max(row.ts)));
-                    if self.tx.send(WriterMsg::Row(Box::new(row))).await.is_err() {
-                        return Ended::Closed;
-                    }
                     *received = true;
                     if last_touch.is_none_or(|t| t.elapsed() >= TOUCH_INTERVAL) {
                         self.runtime.touch(&self.pod, &self.container);
                         last_touch = Some(Instant::now());
+                    }
+                    let log = parse_log_line(line, Some(&self.pod));
+                    let kubelet = kubelet_time(&log);
+                    // Las líneas sin timestamp de kubelet usan la hora de llegada y nunca se
+                    // descartan por posición.
+                    if let Some((ts, _)) = &kubelet {
+                        if floor.is_some_and(|floor| *ts <= floor) {
+                            continue;
+                        }
+                        *last_us = Some(last_us.map_or(*ts, |previous| previous.max(*ts)));
+                    }
+                    if !self.accepts(&log) {
+                        continue;
+                    }
+                    let (ts, k8s_timestamp) = kubelet.unwrap_or_else(|| {
+                        let now = now_micros();
+                        (now, micros_to_iso(now).unwrap_or_default())
+                    });
+                    let row = self.build_row(log, ts, k8s_timestamp);
+                    if self.tx.send(WriterMsg::Row(Box::new(row))).await.is_err() {
+                        return Ended::Closed;
                     }
                 }
                 Err(e) => return Ended::Failed(e.to_string()),
@@ -254,14 +274,16 @@ impl Follower {
 
         let mut delay = MIN_BACKOFF;
         loop {
-            // Primera vez: las últimas líneas; después, desde el último timestamp guardado
-            // (precisión de segundos: las repetidas las descarta la restricción de unicidad).
+            // Primera vez: las últimas líneas; después, desde la última posición conocida
+            // redondeada al segundo hacia abajo (las repetidas se descartan en `follow_once`).
             let params = LogParams {
                 follow: true,
                 timestamps: true,
                 container: Some(self.container.clone()),
                 tail_lines: last_us.is_none().then_some(INITIAL_TAIL),
-                since_time: last_us.and_then(DateTime::<Utc>::from_timestamp_micros),
+                since_time: last_us.and_then(|us| {
+                    DateTime::<Utc>::from_timestamp_micros(us - us.rem_euclid(1_000_000))
+                }),
                 ..Default::default()
             };
             let mut received = false;
@@ -360,6 +382,8 @@ impl Followers {
                 pod: name.clone(),
                 container: container.name.clone(),
                 terminal: terminal.clone(),
+                min_level: env.target.min_level,
+                exclude: env.target.exclude.clone().unwrap_or_default(),
             };
             let handle = self.tasks.spawn(follower.run());
             self.handles.insert(key, handle);

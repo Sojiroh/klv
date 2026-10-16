@@ -23,7 +23,7 @@ packages/
 
 ## Instalacion
 
-Requiere Node.js `>=22.13` (el servidor usa `node:sqlite` para el historial local, y carga `@klv/core`, que es ESM, via `require()`).
+Requiere Node.js `>=22.13` (el servidor carga `@klv/core`, que es ESM, via `require()`) y el binding nativo de DuckDB (`@duckdb/node-api`, con binarios precompilados para Linux/macOS/Windows x64/arm64) para el historial local. Los builds de escritorio compilan libduckdb: la primera compilacion de Rust tarda varios minutos.
 
 ```bash
 git clone https://github.com/Sojiroh/klv.git
@@ -54,7 +54,7 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 | `HOST` | `127.0.0.1` | Interfaz donde escucha el servidor. Usa `0.0.0.0` solo si de verdad quieres exponerlo en la red |
 | `PORT` | `3000` | Puerto HTTP/WebSocket |
 | `KLV_ALLOWED_ORIGINS` | — | Origenes extra (separados por coma) aceptados por el WebSocket, ademas de `localhost`/`127.0.0.1` en `PORT` y el dev server `:5173` |
-| `KLV_DATA_DIR` | `~/.klv` | Carpeta donde se guarda el historial local (`history.db`) |
+| `KLV_DATA_DIR` | `~/.klv` | Carpeta donde se guarda el historial local (`config.json`, `history.duckdb`, `segments/`) |
 
 ### Paginas
 
@@ -78,7 +78,7 @@ Sintaxis del query:
 
 | Ejemplo | Significado |
 |---------|-------------|
-| `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en mensaje, error, stack, service, trace y atributos |
+| `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en `message`, `error` y `stack` (como Datadog); para otros campos usa `campo:valor` y para atributos `@campo:valor` |
 | `time*out` | Comodin |
 | `level:error`, `level:>=warn` | Nivel exacto o minimo (alias `status:`) |
 | `service:api-*`, `env:prod`, `version:1.2.3`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe). Los tags de Datadog `@dd.trace_id:`/`dd.trace_id:`, `dd.span_id:`, `dd.service:`, `dd.env:` y `dd.version:` son alias de los campos reservados |
@@ -87,7 +87,14 @@ Sintaxis del query:
 
 ### Historial local (retencion)
 
-El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + container y/o label selector opcionales), reconecta tras reinicios y rollouts, y guarda los logs en SQLite (`$KLV_DATA_DIR/history.db`). La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB). Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
+El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + container y/o label selector opcionales), reconecta tras reinicios y rollouts, y guarda los logs en DuckDB + segmentos Parquet por hora comprimidos con zstd en `$KLV_DATA_DIR/segments/` (o `~/.klv/segments/`). `history.duckdb` contiene solo la hora en curso y los metadatos; `config.json` guarda los targets y la retencion. La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB) y borra archivos enteros, asi que es instantanea y no bloquea el servidor. El tamaño en disco es aprox. 1/8–1/15 del volumen crudo de logs JSON. Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
+
+Cada target admite filtros opcionales aplicados antes de guardar:
+
+- `minLevel`: nivel minimo a guardar (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`); las lineas sin nivel (continuaciones de stack traces, texto plano) se conservan
+- `exclude`: lista de patrones (1–20, hasta 200 caracteres); se descarta la linea si el mensaje contiene alguno como substring (distingue mayusculas)
+
+Al arrancar con un `history.db` de la version anterior (SQLite) se migran los targets y la retencion a `config.json` y se descartan los logs antiguos.
 
 ### API REST
 
@@ -100,7 +107,7 @@ El recolector sigue continuamente los pods de los targets configurados (contexto
 | `GET /api/deployments/:namespace` | Listar deployments |
 | `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
-| `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector y retencion |
+| `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `minLevel` y `exclude` opcionales) y retencion |
 | `GET /api/history/status` | Estadisticas del historial y estado de cada target |
 | `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
 | `POST /api/history/clear` | Borrar el historial |
@@ -138,7 +145,7 @@ npm run build:desktop
 - **Frontend**: Mismo React SPA que la web, con una capa adaptadora (`tauri.ts`) que detecta si corre en Tauri (`window.__TAURI_INTERNALS__`) y redirige las llamadas API al backend Rust via `invoke()`
 - **Backend**: Comandos Tauri en Rust que usan `kube-rs` directamente, con streaming via eventos Tauri
 - **Log parser y query language**: Reimplementados en Rust (`log_parser.rs`, `query.rs`) con la misma semantica que `@klv/core`
-- **Historial local**: mismo recolector y API que la web, con `rusqlite`, en la carpeta de datos de la app
+- **Historial local**: mismo recolector, API y formato de almacenamiento que la web (DuckDB + segmentos Parquet, crate `duckdb` fijado a 1.4.2), en la carpeta de datos de la app. La primera compilacion de Rust tarda varios minutos porque compila libduckdb
 
 ### Comandos Tauri
 

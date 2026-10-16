@@ -1,6 +1,6 @@
 {
   "name": "@klv/web",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "engines": {
     "node": ">=22.13"
   },
@@ -12,6 +12,7 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.6-r.1",
     "@klv/core": "*",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",

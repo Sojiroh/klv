@@ -8,6 +8,7 @@ import type {
   ContextsResponse,
   HistoryConfig,
   HistoryConfigInput,
+  LogLevel,
 } from '../../types';
 import { formatBytes, formatTimestamp } from '../../utils/log-utils';
 import ErrorNotice from '../ErrorNotice';
@@ -17,6 +18,9 @@ const MAX_TARGETS = 50;
 const MAX_SELECTOR_LENGTH = 1024;
 const AGE_BOUNDS = { min: 1, max: 365 };
 const SIZE_BOUNDS = { min: 64, max: 102400 };
+const MAX_EXCLUDES = 20;
+const MAX_EXCLUDE_LENGTH = 200;
+const MIN_LEVELS: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'];
 
 interface DraftTarget {
   key: string;
@@ -26,6 +30,8 @@ interface DraftTarget {
   container: string;
   labelSelector: string;
   enabled: boolean;
+  minLevel?: LogLevel;
+  exclude: string;
 }
 
 interface Draft {
@@ -37,6 +43,12 @@ interface Draft {
 let nextKey = 0;
 const newKey = () => `target-${nextKey++}`;
 
+// Patrones separados por coma → arreglo recortado sin vacíos (undefined si no queda ninguno).
+function parseExclude(text: string): string[] | undefined {
+  const patterns = text.split(',').map((p) => p.trim()).filter(Boolean);
+  return patterns.length > 0 ? patterns : undefined;
+}
+
 function toDraft(config: HistoryConfig): Draft {
   return {
     targets: config.targets.map((t) => ({
@@ -47,6 +59,8 @@ function toDraft(config: HistoryConfig): Draft {
       container: t.container ?? '',
       labelSelector: t.labelSelector ?? '',
       enabled: t.enabled,
+      minLevel: t.minLevel,
+      exclude: (t.exclude ?? []).join(', '),
     })),
     maxAgeDays: String(config.retention.maxAgeDays),
     maxSizeMb: String(config.retention.maxSizeMb),
@@ -62,6 +76,8 @@ function toInput(draft: Draft): HistoryConfigInput {
       container: t.container.trim() || undefined,
       labelSelector: t.labelSelector.trim() || undefined,
       enabled: t.enabled,
+      minLevel: t.minLevel,
+      exclude: parseExclude(t.exclude),
     })),
     retention: { maxAgeDays: Number(draft.maxAgeDays), maxSizeMb: Number(draft.maxSizeMb) },
   };
@@ -74,6 +90,12 @@ function validate(input: HistoryConfigInput): string | null {
     if (!t.namespace) return `Target ${i + 1}: namespace is required`;
     if ((t.labelSelector?.length ?? 0) > MAX_SELECTOR_LENGTH) {
       return `Target ${i + 1}: label selector is longer than ${MAX_SELECTOR_LENGTH} characters`;
+    }
+    if ((t.exclude?.length ?? 0) > MAX_EXCLUDES) {
+      return `Target ${i + 1}: at most ${MAX_EXCLUDES} exclude patterns are allowed`;
+    }
+    if (t.exclude?.some((p) => p.length > MAX_EXCLUDE_LENGTH)) {
+      return `Target ${i + 1}: exclude patterns are limited to ${MAX_EXCLUDE_LENGTH} characters`;
     }
   }
   const { maxAgeDays, maxSizeMb } = input.retention;
@@ -192,6 +214,7 @@ export default function CollectorPanel() {
               container: '',
               labelSelector: '',
               enabled: true,
+              exclude: '',
             },
           ],
         },
@@ -266,6 +289,8 @@ export default function CollectorPanel() {
                   <th className="py-2.5 px-3 text-left klv-section-label">Namespace</th>
                   <th className="py-2.5 px-3 text-left klv-section-label">Container</th>
                   <th className="py-2.5 px-3 text-left klv-section-label">Label selector</th>
+                  <th className="py-2.5 px-3 text-left klv-section-label">Min level</th>
+                  <th className="py-2.5 px-3 text-left klv-section-label">Exclude</th>
                   <th className="py-2.5 px-3 text-left klv-section-label">Status</th>
                   <th className="py-2.5 px-3 w-10" />
                 </tr>
@@ -338,6 +363,28 @@ export default function CollectorPanel() {
                             className={cellInput}
                           />
                         </td>
+                        <td className="py-2 px-3 min-w-[110px]">
+                          <select
+                            value={t.minLevel ?? ''}
+                            onChange={(e) => patchTarget(t.key, { minLevel: (e.target.value || undefined) as LogLevel | undefined })}
+                            className="klv-select w-full !py-1 text-xs font-mono"
+                            aria-label="Min level"
+                          >
+                            <option value="">All</option>
+                            {MIN_LEVELS.map((l) => (
+                              <option key={l} value={l}>{l}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="py-2 px-3 min-w-[170px]">
+                          <input
+                            type="text"
+                            value={t.exclude}
+                            onChange={(e) => patchTarget(t.key, { exclude: e.target.value })}
+                            placeholder="healthz, /metrics"
+                            className={cellInput}
+                          />
+                        </td>
                         <td className="py-2 px-3 min-w-[150px]">
                           {live ? (
                             <div className="space-y-1">
@@ -367,7 +414,7 @@ export default function CollectorPanel() {
                       {open && live && (
                         <tr className="bg-klv-base/50">
                           <td />
-                          <td colSpan={7} className="px-3 py-3">
+                          <td colSpan={9} className="px-3 py-3">
                             <Streams streams={live.streams} />
                           </td>
                         </tr>
@@ -412,7 +459,7 @@ export default function CollectorPanel() {
               />
             </label>
             <p className="text-xs text-klv-text-muted max-w-sm">
-              Older rows are deleted every 10 minutes; when the database exceeds the size limit the oldest rows are removed first.
+              Hourly segments older than the max age are deleted every minute; when the size limit is exceeded the oldest segments are removed first.
             </p>
           </div>
         </section>

@@ -6,7 +6,7 @@ import { SearchIcon, XIcon } from './icons';
 const APPLY_DEBOUNCE_MS = 300;
 
 const SYNTAX_HELP: { example: string; meaning: string }[] = [
-  { example: 'timeout', meaning: 'free text (case-insensitive)' },
+  { example: 'timeout', meaning: 'free text: searches message, error and stack only (case-insensitive)' },
   { example: '"connection refused"', meaning: 'exact phrase' },
   { example: 'time*out', meaning: 'wildcard' },
   { example: 'level:error', meaning: 'level (alias status); level:>=warn' },

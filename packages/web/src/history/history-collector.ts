@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
-import { KubeClient, parseLogLine } from '@klv/core';
-import type { LogOptions, PodInfo, PodWatchEventType } from '@klv/core';
+import { KubeClient, LEVEL_PRIORITY, parseLogLine } from '@klv/core';
+import type { LogOptions, ParsedLog, PodInfo, PodWatchEventType } from '@klv/core';
+import { parseKubeletMicros } from './history-store';
 import type { HistoryStore, LogScope } from './history-store';
 import type { CollectorStatus, CollectorStream, CollectorTarget } from './history.types';
 
@@ -11,7 +12,8 @@ const STABLE_WATCH_MS = 30_000;
 const FIRST_TAIL_LINES = 1000;
 const NOT_STARTED = /waiting to start|PodInitializing|ContainerCreating/;
 
-// Sigue un contenedor con reconexión exponencial (1 s → 60 s, se reinicia al recibir una línea)
+// Sigue un contenedor con reconexión exponencial (1 s → 60 s, se reinicia al recibir una línea).
+// Aplica los filtros del target antes de encolar y descarta las líneas ya guardadas al reanudar
 class StreamFollower {
   private state: CollectorStream['state'] = 'waiting';
   private error: string | undefined;
@@ -20,12 +22,15 @@ class StreamFollower {
   private timer: NodeJS.Timeout | undefined;
   private stopStream: (() => void) | undefined;
   private attempt = 0;
+  // Mayor timestamp aceptado por este follower: cubre la ventana aún sin volcar al reconectar
+  private lastTs: number | null = null;
   private stopped = false;
 
   constructor(
     private readonly client: KubeClient,
     private readonly store: HistoryStore,
     private readonly scope: LogScope,
+    private readonly target: CollectorTarget,
   ) {}
 
   start(): void {
@@ -49,13 +54,23 @@ class StreamFollower {
     };
   }
 
+  // true si el target descarta la línea (nivel por debajo de minLevel o mensaje con un patrón de exclude)
+  private filtered(log: ParsedLog): boolean {
+    const { minLevel, exclude } = this.target;
+    if (minLevel !== undefined && log.level !== 'UNKNOWN' && LEVEL_PRIORITY[log.level] < LEVEL_PRIORITY[minLevel]) return true;
+    return exclude?.some((pattern) => log.message.includes(pattern)) ?? false;
+  }
+
   private async connect(): Promise<void> {
     if (this.stopped) return;
     const attempt = ++this.attempt;
-    const lastUs = this.store.lastTimestampUs(this.scope);
-    const resume: Pick<LogOptions, 'tailLines' | 'sinceTime'> = lastUs === null
+    const storedUs = await this.store.lastTimestampUs(this.scope);
+    if (this.stopped || attempt !== this.attempt) return;
+    // Todo lo que tenga ts_us <= resumeUs ya está guardado (o encolado) y se descarta
+    const resumeUs = storedUs === null || (this.lastTs !== null && this.lastTs > storedUs) ? this.lastTs : storedUs;
+    const resume: Pick<LogOptions, 'tailLines' | 'sinceTime'> = resumeUs === null
       ? { tailLines: FIRST_TAIL_LINES }
-      : { sinceTime: new Date(Math.floor(lastUs / 1_000_000) * 1000).toISOString() };
+      : { sinceTime: new Date(Math.floor(resumeUs / 1_000_000) * 1000).toISOString() };
     let ended = false;
 
     const end = (state: CollectorStream['state'], error?: string): void => {
@@ -74,11 +89,20 @@ class StreamFollower {
       {
         onLine: (line) => {
           if (ended || this.stopped || attempt !== this.attempt) return;
-          this.store.enqueue(this.scope, parseLogLine(line, this.scope.pod));
           this.backoff = MIN_BACKOFF_MS;
           this.state = 'following';
           this.error = undefined;
           this.lastLineAt = new Date().toISOString();
+
+          const log = parseLogLine(line, this.scope.pod);
+          if (this.filtered(log)) return;
+          // Las líneas sin prefijo de kubelet válido llevan la hora de llegada y nunca se descartan
+          const tsUs = log.k8sTimestamp !== undefined ? parseKubeletMicros(log.k8sTimestamp) : null;
+          if (tsUs !== null) {
+            if (resumeUs !== null && tsUs <= resumeUs) return;
+            if (this.lastTs === null || tsUs > this.lastTs) this.lastTs = tsUs;
+          }
+          this.store.enqueue(this.scope, log);
         },
         onError: (err) => end('error', err.message),
         onEnd: () => end('waiting'),
@@ -218,7 +242,7 @@ export class TargetCollector {
         namespace: this.target.namespace,
         pod: pod.name,
         container,
-      });
+      }, this.target);
       containers.set(container, follower);
       follower.start();
     }

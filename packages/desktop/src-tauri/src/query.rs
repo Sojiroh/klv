@@ -230,36 +230,16 @@ fn level_from_name(name: &str) -> Option<LogLevel> {
     }
 }
 
-/// `[message, error, stackTrace, service, env, version, traceId, spanId, caller, podName, container, namespace]`
-/// sin vacíos, unidos con `\n`, más `\n` y el `JSON.stringify` de `extra`.
+/// Corpus del texto libre (estilo Datadog): `[message, error, stackTrace]` sin vacíos, unidos
+/// con `\n`. Los atributos se buscan con `@attr:valor` y los campos reservados con `campo:valor`.
 pub fn search_text(target: &QueryTarget<'_>) -> String {
     let log = target.log;
-    let parts = [
-        Some(log.message.as_str()),
-        log.error.as_deref(),
-        log.stack_trace.as_deref(),
-        log.service.as_deref(),
-        log.env.as_deref(),
-        log.version.as_deref(),
-        log.trace_id.as_deref(),
-        log.span_id.as_deref(),
-        log.caller.as_deref(),
-        log.pod_name.as_deref(),
-        target.container,
-        target.namespace,
-    ];
-    let mut text = String::new();
-    for part in parts.into_iter().flatten().filter(|p| !p.is_empty()) {
-        text.push_str(part);
-        text.push('\n');
-    }
-    // Con partes presentes el join no lleva `\n` final y luego se añade uno: equivale a
-    // terminar cada parte con `\n`. Sin partes, queda solo el `\n` separador.
-    if text.is_empty() {
-        text.push('\n');
-    }
-    write_js_object(&log.extra, &mut text);
-    text
+    [Some(log.message.as_str()), log.error.as_deref(), log.stack_trace.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Clave plana `extra["a.b"]` si existe y no es null; si no, recorrido anidado `extra.a.b`.

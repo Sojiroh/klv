@@ -1,9 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
+import { access } from 'fs/promises';
 import { setImmediate as yieldToEventLoop } from 'timers/promises';
-import type { SQLInputValue, SQLOutputValue } from 'node:sqlite';
-import { LEVEL_PRIORITY, assertK8sName, matchesQuery, parseLevel } from '@klv/core';
+import { LEVEL_PRIORITY, assertK8sName, matchesQuery, parseLevel, parseLogLine } from '@klv/core';
 import type { LogLevel, QueryNode } from '@klv/core';
-import type { HistoryStore } from './history-store';
+import { COLUMN_LIST, sqlString } from './history-store';
+import type { HistoryStore, Row, SegmentRef, SqlParam } from './history-store';
 import { isRecord } from './type-guards';
 import type { HistoryLog, HistoryQueryResponse } from './history.types';
 
@@ -13,7 +14,8 @@ const MAX_FILTER_NAMES = 100;
 const SCAN_BUDGET = 200_000;
 const MAX_PAGE = 5000;
 const MAX_QUERY_DEPTH = 64;
-const MIN_FTS_TERM = 3;
+// Un chunk agrupa cubos horarios consecutivos hasta este tamaño de Parquet (un cubo nunca se parte)
+const CHUNK_BYTES = 256 * 1024 * 1024;
 
 const RESERVED_FIELDS: Record<string, string | undefined> = {
   level: 'level',
@@ -30,9 +32,6 @@ const RESERVED_FIELDS: Record<string, string | undefined> = {
   error: 'error',
 };
 
-const COLUMNS = `id, context, namespace, pod, container, ts_us, raw, is_json, timestamp, k8s_timestamp, level,
-  message, service, env, version, trace_id, span_id, caller, error, stack_trace, extra`;
-
 interface Position {
   tsUs: number;
   id: number;
@@ -40,7 +39,7 @@ interface Position {
 
 interface Fragment {
   sql: string;
-  params: SQLInputValue[];
+  params: SqlParam[];
 }
 
 interface ValidQuery {
@@ -165,11 +164,13 @@ function validateRequest(body: unknown): ValidQuery {
 
 const PRINTABLE_ASCII = /^[\x20-\x7e]+$/;
 
-function ftsFragment(value: string): Fragment | null {
-  if (value.length < MIN_FTS_TERM || !PRINTABLE_ASCII.test(value)) return null;
+// Texto libre = message, error o stack_trace (el mismo conjunto que evalúa matchesQuery)
+function likeFragment(value: string): Fragment | null {
+  if (!PRINTABLE_ASCII.test(value)) return null;
+  const pattern = `%${value.replace(/[\\%_]/g, '\\$&')}%`;
   return {
-    sql: 'l.id IN (SELECT rowid FROM logs_fts WHERE logs_fts MATCH ?)',
-    params: [`"${value.replaceAll('"', '""')}"`],
+    sql: `(l.message ILIKE ? ESCAPE '\\' OR l.error ILIKE ? ESCAPE '\\' OR l.stack_trace ILIKE ? ESCAPE '\\')`,
+    params: [pattern, pattern, pattern],
   };
 }
 
@@ -199,16 +200,16 @@ function fieldFragment(node: Extract<QueryNode, { type: 'field' }>): Fragment | 
 
   if (node.op === 'exists') return { sql: `(l.${column} IS NOT NULL AND l.${column} <> '')`, params: [] };
   if (node.op === 'eq' && !node.wildcard && PRINTABLE_ASCII.test(node.value)) {
-    return { sql: `l.${column} = ? COLLATE NOCASE`, params: [node.value] };
+    return { sql: `lower(l.${column}) = lower(?)`, params: [node.value] };
   }
   return null;
 }
 
 function textFragment(node: Extract<QueryNode, { type: 'text' }>): Fragment | null {
-  if (!node.wildcard) return ftsFragment(node.value);
+  if (!node.wildcard) return likeFragment(node.value);
   // Glob: cada tramo literal debe aparecer; se usa el más largo
   const longest = node.value.split('*').reduce((best, part) => (part.length > best.length ? part : best), '');
-  return ftsFragment(longest);
+  return likeFragment(longest);
 }
 
 // null = sin restricción (TRUE)
@@ -238,43 +239,23 @@ function prefilter(node: QueryNode | null): Fragment | null {
 
 // ---- Ejecución ----
 
-function rowToLog(row: Record<string, SQLOutputValue>): HistoryLog {
-  const text = (key: string): string | undefined => (typeof row[key] === 'string' ? row[key] as string : undefined);
-  const timestamp = text('timestamp');
-  const service = text('service');
-  const env = text('env');
-  const version = text('version');
-  const traceId = text('trace_id');
-  const spanId = text('span_id');
-  const caller = text('caller');
-  const error = text('error');
-  const stackTrace = text('stack_trace');
+// Reconstruye el log completo desde la línea guardada (`extra`, `timestamp` e `isJson` no se persisten)
+function rowToLog(row: Row): HistoryLog {
+  const pod = row.pod as string;
   return {
-    raw: row.raw as string,
-    isJson: row.is_json === 1,
-    ...(timestamp !== undefined && { timestamp }),
+    ...parseLogLine(row.raw as string, pod),
     k8sTimestamp: row.k8s_timestamp as string,
-    level: row.level as LogLevel,
-    message: row.message as string,
-    ...(service !== undefined && { service }),
-    ...(env !== undefined && { env }),
-    ...(version !== undefined && { version }),
-    ...(traceId !== undefined && { traceId }),
-    ...(spanId !== undefined && { spanId }),
-    ...(caller !== undefined && { caller }),
-    ...(error !== undefined && { error }),
-    ...(stackTrace !== undefined && { stackTrace }),
-    podName: row.pod as string,
-    extra: JSON.parse(row.extra as string) as Record<string, unknown>,
+    podName: pod,
     context: row.context as string,
     namespace: row.namespace as string,
     container: row.container as string,
   };
 }
 
-function buildSql(request: ValidQuery): { sql: string; params: SQLInputValue[] } {
+// Condiciones de ámbito, rango temporal y prefiltro (sin la paginación keyset)
+function buildFilter(request: ValidQuery): Fragment {
   const conditions: string[] = [];
-  const params: SQLInputValue[] = [];
+  const params: SqlParam[] = [];
 
   if (request.context !== undefined) {
     conditions.push('l.context = ?');
@@ -305,56 +286,127 @@ function buildSql(request: ValidQuery): { sql: string; params: SQLInputValue[] }
     conditions.push(filter.sql);
     params.push(...filter.params);
   }
-
-  conditions.push('(l.ts_us, l.id) < (?, ?)');
-  return {
-    sql: `SELECT ${COLUMNS} FROM logs l WHERE ${conditions.join(' AND ')} ORDER BY l.ts_us DESC, l.id DESC LIMIT ?`,
-    params,
-  };
+  return { sql: conditions.length > 0 ? conditions.join(' AND ') : 'TRUE', params };
 }
 
-// Devuelve las `limit` coincidencias más recientes (orden ascendente) por páginas keyset, cediendo el event loop entre páginas
+// Tramo de tiempo [startUs, endUs) con los segmentos Parquet que contiene; los chunks cubren todo el eje
+// (el más nuevo no tiene fin y el más antiguo no tiene inicio) para que `current` nunca quede fuera
+interface Chunk {
+  startUs: number;
+  endUs: number;
+  files: string[];
+}
+
+// `segments` llega ordenado de más nuevo a más antiguo; un cubo (varios archivos posibles) nunca se parte
+function buildChunks(segments: SegmentRef[]): Chunk[] {
+  const buckets = new Map<number, { bytes: number; files: string[] }>();
+  for (const segment of segments) {
+    const bucket = buckets.get(segment.bucketUs) ?? { bytes: 0, files: [] };
+    bucket.bytes += segment.bytes;
+    bucket.files.push(segment.path);
+    buckets.set(segment.bucketUs, bucket);
+  }
+
+  const chunks: Chunk[] = [];
+  let bytes = 0;
+  for (const [bucketUs, bucket] of buckets) {
+    if (chunks.length === 0 || bytes + bucket.bytes > CHUNK_BYTES) {
+      chunks.push({ startUs: bucketUs, endUs: Number.POSITIVE_INFINITY, files: [] });
+      bytes = 0;
+    }
+    const chunk = chunks[chunks.length - 1];
+    chunk.startUs = bucketUs;
+    chunk.files.push(...bucket.files);
+    bytes += bucket.bytes;
+  }
+  if (chunks.length === 0) chunks.push({ startUs: Number.NEGATIVE_INFINITY, endUs: Number.POSITIVE_INFINITY, files: [] });
+  for (let i = 1; i < chunks.length; i++) chunks[i].endUs = chunks[i - 1].startUs;
+  chunks[chunks.length - 1].startUs = Number.NEGATIVE_INFINITY;
+  return chunks;
+}
+
+async function chunkSql(chunk: Chunk, filterSql: string): Promise<string> {
+  const range: string[] = [];
+  if (Number.isFinite(chunk.startUs)) range.push(`ts_us >= ${chunk.startUs}`);
+  if (Number.isFinite(chunk.endUs)) range.push(`ts_us < ${chunk.endUs}`);
+  const arms = [`SELECT ${COLUMN_LIST} FROM current WHERE ${range.length > 0 ? range.join(' AND ') : 'TRUE'}`];
+
+  // Un segmento puede haberse borrado por retención desde que se listó
+  const present: string[] = [];
+  for (const file of chunk.files) {
+    if (await access(file).then(() => true, () => false)) present.push(file);
+  }
+  if (present.length > 0) arms.push(`SELECT ${COLUMN_LIST} FROM read_parquet([${present.map(sqlString).join(', ')}])`);
+
+  return `SELECT ${COLUMN_LIST} FROM (${arms.join(' UNION ALL ')}) l
+    WHERE ${filterSql} AND (l.ts_us < ? OR (l.ts_us = ? AND l.id < ?))
+    ORDER BY l.ts_us DESC, l.id DESC LIMIT ?`;
+}
+
+// Devuelve las `limit` coincidencias más recientes (orden ascendente) recorriendo los chunks del más nuevo al más
+// antiguo por páginas keyset, cediendo el event loop entre páginas
 export async function queryHistory(store: HistoryStore, body: unknown): Promise<HistoryQueryResponse> {
   const request = validateRequest(body);
-  const { sql, params } = buildSql(request);
+  const filter = buildFilter(request);
+  // Que las líneas recién recibidas ya sean visibles
+  await store.flush();
 
-  let position: Position = request.before ?? { tsUs: Number.MAX_SAFE_INTEGER, id: Number.MAX_SAFE_INTEGER };
-  const matches: HistoryLog[] = [];
-  const positions: Position[] = [];
-  let scanned = 0;
-  let pageSize = Math.min(Math.max(request.limit, 100), MAX_PAGE);
-  let nextCursor: string | null = null;
-  let truncated = false;
+  return store.read(async (reader) => {
+    const chunks = buildChunks(await store.listSegments(reader, request.fromUs, request.toUs));
+    let position: Position = request.before ?? { tsUs: Number.MAX_SAFE_INTEGER, id: Number.MAX_SAFE_INTEGER };
+    const matches: HistoryLog[] = [];
+    let scanned = 0;
+    let pageSize = Math.min(Math.max(request.limit, 100), MAX_PAGE);
+    let nextCursor: string | null = null;
+    let truncated = false;
 
-  scan: while (true) {
-    const size = Math.min(pageSize, SCAN_BUDGET - scanned);
-    const rows = store.all(sql, [...params, position.tsUs, position.id, size]);
+    scan: for (let c = 0; c < chunks.length; c++) {
+      const chunk = chunks[c];
+      // Los chunks más nuevos que el cursor o que `to` solo tienen filas descartadas
+      if (chunk.startUs > position.tsUs) continue;
+      if (request.toUs !== undefined && chunk.startUs >= request.toUs) continue;
+      // Los siguientes son aún más antiguos que `from`
+      if (request.fromUs !== undefined && chunk.endUs <= request.fromUs) break;
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      scanned++;
-      position = { tsUs: row.ts_us as number, id: row.id as number };
-      const log = rowToLog(row);
-      if (!matchesQuery(log, request.ast)) continue;
+      const sql = await chunkSql(chunk, filter.sql);
+      const hasOlder = c < chunks.length - 1;
+      while (true) {
+        const size = Math.min(pageSize, SCAN_BUDGET - scanned);
+        const rows = await reader.all(sql, [...filter.params, position.tsUs, position.tsUs, position.id, size]);
 
-      matches.push(log);
-      positions.push(position);
-      if (matches.length === request.limit) {
-        // Quedan filas por revisar salvo que este sea el final de los datos
-        if (i < rows.length - 1 || rows.length === size) nextCursor = encodeCursor(position);
-        break scan;
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          scanned++;
+          position = { tsUs: Number(row.ts_us), id: Number(row.id) };
+          const log = rowToLog(row);
+          if (!matchesQuery(log, request.ast)) continue;
+
+          matches.push(log);
+          if (matches.length === request.limit) {
+            // Quedan filas por revisar salvo que este sea el final de los datos
+            if (i < rows.length - 1 || rows.length === size || hasOlder) nextCursor = encodeCursor(position);
+            break scan;
+          }
+        }
+
+        // Página incompleta: chunk agotado, sigue el siguiente (más antiguo) con el mismo cursor
+        if (rows.length < size) break;
+        if (scanned >= SCAN_BUDGET) {
+          truncated = true;
+          nextCursor = encodeCursor(position);
+          break scan;
+        }
+        pageSize = Math.min(pageSize * 2, MAX_PAGE);
+        await yieldToEventLoop();
+      }
+
+      if (scanned >= SCAN_BUDGET && hasOlder) {
+        truncated = true;
+        nextCursor = encodeCursor(position);
+        break;
       }
     }
 
-    if (rows.length < size) break;
-    if (scanned >= SCAN_BUDGET) {
-      truncated = true;
-      nextCursor = encodeCursor(position);
-      break;
-    }
-    pageSize = Math.min(pageSize * 2, MAX_PAGE);
-    await yieldToEventLoop();
-  }
-
-  return { logs: matches.reverse(), nextCursor, scanned, truncated };
+    return { logs: matches.reverse(), nextCursor, scanned, truncated };
+  });
 }

@@ -426,24 +426,6 @@ function globRegExp(node: QueryNode, glob: string, anchored: boolean): RegExp {
   return regex;
 }
 
-function searchText(log: QueryableLog): string {
-  const parts = [
-    log.message,
-    log.error,
-    log.stackTrace,
-    log.service,
-    log.env,
-    log.version,
-    log.traceId,
-    log.spanId,
-    log.caller,
-    log.podName,
-    log.container,
-    log.namespace,
-  ].filter(Boolean);
-  return `${parts.join('\n')}\n${JSON.stringify(log.extra)}`;
-}
-
 function resolveAttribute(extra: Record<string, unknown>, path: string): unknown {
   if (Object.hasOwn(extra, path) && extra[path] != null) return extra[path];
   let current: unknown = extra;
@@ -565,7 +547,10 @@ export function matchesQuery(log: QueryableLog, ast: QueryNode | null): boolean 
       case 'not':
         return !evaluate(node.child);
       case 'text':
-        text ??= searchText(log);
+        // Corpus del texto libre (estilo Datadog): message, error y stack trace, sin vacíos, unidos con
+        // `\n`. Los atributos se buscan con `@attr:valor` y los reservados con `campo:valor`.
+        // El prefiltro SQL del historial (`message/error/stack_trace ILIKE`) depende de este corpus.
+        text ??= [log.message, log.error, log.stackTrace].filter(Boolean).join('\n');
         if (node.wildcard) return globRegExp(node, node.value, false).test(text);
         lowerText ??= text.toLowerCase();
         return lowerText.includes(node.value.toLowerCase());
