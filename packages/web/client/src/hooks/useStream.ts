@@ -21,6 +21,9 @@ import { errorMessage } from '../lib/api';
 const MAX_NOTICES = 100;
 const FLUSH_INTERVAL_MS = 100;
 const IS_TAURI = isTauri();
+/** Heap per buffered log measured in Chromium (parsed objects + explorer caches): a fixed part plus one per raw character. */
+const HEAP_BYTES_PER_LOG = 700;
+const HEAP_BYTES_PER_RAW_CHAR = 1.3;
 
 interface StreamScope {
   namespace: string;
@@ -34,6 +37,7 @@ function newStreamId(): string {
 export function useStream({ bufferSize }: { bufferSize: number }) {
   const [logs, setLogs] = useState<ParsedLog[]>([]);
   const [dropped, setDropped] = useState(0);
+  const [approxBytes, setApproxBytes] = useState(0);
   const [notices, setNotices] = useState<StreamNotice[]>([]);
   const [connected, setConnected] = useState(IS_TAURI);
   const [streaming, setStreaming] = useState(false);
@@ -44,6 +48,7 @@ export function useStream({ bufferSize }: { bufferSize: number }) {
   const scopeRef = useRef<StreamScope | null>(null);
   const bufferSizeRef = useRef(bufferSize);
   const logsRef = useRef<ParsedLog[]>([]);
+  const rawCharsRef = useRef(0);
   const pendingRef = useRef<ParsedLog[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -53,15 +58,22 @@ export function useStream({ bufferSize }: { bufferSize: number }) {
     setNotices((prev) => [...prev, notice].slice(-MAX_NOTICES));
   }, []);
 
-  /** Appends `batch` to the buffer, keeping the newest `bufferSize` lines and counting the discarded ones. */
+  /** Appends `batch` to the buffer, keeping the newest `bufferSize` lines (Infinity = all) and counting the discarded ones. */
   const commit = useCallback((batch: ParsedLog[]) => {
     const size = bufferSizeRef.current;
     const combined = batch.length > 0 ? logsRef.current.concat(batch) : logsRef.current;
     const overflow = combined.length - size;
     if (overflow <= 0 && batch.length === 0) return;
+    let rawChars = rawCharsRef.current;
+    for (const log of batch) rawChars += log.raw.length;
+    if (overflow > 0) {
+      for (let i = 0; i < overflow; i++) rawChars -= combined[i].raw.length;
+    }
     const next = overflow > 0 ? combined.slice(overflow) : combined;
     logsRef.current = next;
+    rawCharsRef.current = rawChars;
     setLogs(next);
+    setApproxBytes(next.length * HEAP_BYTES_PER_LOG + rawChars * HEAP_BYTES_PER_RAW_CHAR);
     if (overflow > 0) setDropped((prev) => prev + overflow);
   }, []);
 
@@ -76,7 +88,9 @@ export function useStream({ bufferSize }: { bufferSize: number }) {
   const resetBuffer = useCallback(() => {
     cancelFlush();
     logsRef.current = [];
+    rawCharsRef.current = 0;
     setLogs([]);
+    setApproxBytes(0);
     setDropped(0);
   }, [cancelFlush]);
 
@@ -238,5 +252,5 @@ export function useStream({ bufferSize }: { bufferSize: number }) {
     setNotices([]);
   }, [resetBuffer]);
 
-  return { logs, dropped, notices, connected, streaming, start, stop, clear };
+  return { logs, dropped, approxBytes, notices, connected, streaming, start, stop, clear };
 }

@@ -8,12 +8,21 @@ import ErrorNotice from '../components/ErrorNotice';
 import Explorer from '../components/explorer/Explorer';
 import { type ParsedLog, type Pod } from '../types';
 
-const BUFFER_SIZES = [2000, 5000, 10000, 25000, 50000];
+/** Persisted sentinel: keep every line (the hook receives Infinity). */
+const UNLIMITED = 0;
+const BUFFER_SIZES = [2000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, UNLIMITED];
 const DEFAULT_BUFFER_SIZE = 10000;
+/** From this size on the memory estimate is shown next to the counter. */
+const LARGE_BUFFER = 100000;
+
+function formatMb(bytes: number): string {
+  const mb = bytes / 1_048_576;
+  return mb < 10 ? mb.toFixed(1) : Math.round(mb).toLocaleString();
+}
 
 function BufferSelect({ value, onChange }: { value: number; onChange: (size: number) => void }) {
   return (
-    <label className="flex items-center gap-2" title="Maximum number of lines kept in memory; the oldest are dropped">
+    <label className="flex items-center gap-2" title="Maximum number of lines kept in memory; the oldest are dropped. Unlimited keeps every line">
       <span className="klv-section-label">Buffer</span>
       <select
         value={value}
@@ -21,10 +30,20 @@ function BufferSelect({ value, onChange }: { value: number; onChange: (size: num
         className="klv-select !py-1 text-xs font-mono"
       >
         {BUFFER_SIZES.map((n) => (
-          <option key={n} value={n}>{n.toLocaleString()}</option>
+          <option key={n} value={n}>{n === UNLIMITED ? 'Unlimited' : n.toLocaleString()}</option>
         ))}
       </select>
     </label>
+  );
+}
+
+function UnlimitedWarning({ bytes }: { bytes: number }) {
+  return (
+    <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+      Unlimited buffer: every line stays in this tab's memory (≈ {formatMb(bytes)} MB now, roughly 1 GB per million
+      lines). Past a few hundred thousand lines the page gets slow and may crash — Clear from time to time, or record
+      the pods with the History collector for long sessions.
+    </p>
   );
 }
 
@@ -36,11 +55,14 @@ export default function Stream() {
   const [frozen, setFrozen] = useState<ParsedLog[] | null>(null);
   const [storedBufferSize, setBufferSize] = usePersistentState('klv.stream.bufferSize', DEFAULT_BUFFER_SIZE);
   const bufferSize = BUFFER_SIZES.includes(storedBufferSize) ? storedBufferSize : DEFAULT_BUFFER_SIZE;
+  const unlimited = bufferSize === UNLIMITED;
 
   const { data: pods, error: podsError } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
-  const { logs, dropped, notices, connected, streaming, start, stop, clear } = useStream({ bufferSize });
+  const { logs, dropped, approxBytes, notices, connected, streaming, start, stop, clear } = useStream({
+    bufferSize: unlimited ? Infinity : bufferSize,
+  });
 
   const paused = frozen !== null;
   const displayed = frozen ?? logs;
@@ -195,12 +217,15 @@ export default function Stream() {
                 {dropped.toLocaleString()} dropped
               </span>
             )}
-            <span>
+            <span title="Lines currently in memory">
               {displayed.length.toLocaleString()} buffered{paused && ' (paused)'}
+              {(unlimited || bufferSize >= LARGE_BUFFER) && ` · ≈ ${formatMb(approxBytes)} MB`}
             </span>
           </span>
         </div>
       )}
+
+      {streaming && unlimited && <UnlimitedWarning bytes={approxBytes} />}
 
       {notices.length > 0 && (
         <div className="klv-card px-4 py-3 mb-4 max-h-32 overflow-auto text-xs font-mono space-y-0.5">

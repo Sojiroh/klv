@@ -61,7 +61,7 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 - **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status, reinicios, link a logs agregados y a los logs del contenedor anterior
 - **Logs** — Log Explorer de un pod o de un container agregado (multi-pod)
 - **Search** — Log Explorer sobre todos los pods de un namespace (opcionalmente filtrado por container)
-- **Stream** — Live tail via WebSocket con buffer configurable (2k–50k lineas) y el mismo query language, facetas, columnas y export sobre el buffer
+- **Stream** — Live tail via WebSocket con buffer configurable (2k–500k lineas o sin limite, con estimacion de memoria en vivo) y el mismo query language, facetas, columnas y export sobre el buffer
 - **History** — Log Explorer sobre el historial local guardado por el recolector, y configuracion de targets, retencion y estado del recolector
 
 ### Log Explorer
