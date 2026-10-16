@@ -5,23 +5,64 @@ use serde::{Deserialize, Serialize};
 use crate::parser::log_parser::{LogLevel, ParsedLog};
 use crate::query::QueryNode;
 
+/// Target del colector. Al leer `config.json` se acepta el `container` (string) de versiones
+/// anteriores y se normaliza a `containers`; siempre se guarda `containers`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "StoredCollectorTarget")]
 pub struct CollectorTarget {
     pub id: String,
     pub context: String,
     pub namespace: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub container: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Contenedores a seguir; ausente = todos.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub containers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label_selector: Option<String>,
     pub enabled: bool,
     /// Descarta las líneas con nivel conocido por debajo de este (UNKNOWN siempre se conserva).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_level: Option<LogLevel>,
     /// Descarta las líneas cuyo mensaje contiene alguno de estos textos (distingue mayúsculas).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<String>>,
+}
+
+/// Forma de un target en `config.json`: admite `containers` y el `container` heredado.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredCollectorTarget {
+    id: String,
+    context: String,
+    namespace: String,
+    container: Option<String>,
+    containers: Option<Vec<String>>,
+    label_selector: Option<String>,
+    enabled: bool,
+    min_level: Option<LogLevel>,
+    exclude: Option<Vec<String>>,
+}
+
+impl From<StoredCollectorTarget> for CollectorTarget {
+    fn from(stored: StoredCollectorTarget) -> Self {
+        let containers = match stored.containers {
+            Some(containers) => Some(containers),
+            None => stored
+                .container
+                .filter(|c| !c.is_empty())
+                .map(|c| vec![c]),
+        }
+        .filter(|containers| !containers.is_empty());
+        Self {
+            id: stored.id,
+            context: stored.context,
+            namespace: stored.namespace,
+            containers,
+            label_selector: stored.label_selector,
+            enabled: stored.enabled,
+            min_level: stored.min_level,
+            exclude: stored.exclude,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +71,8 @@ pub struct CollectorTargetInput {
     pub id: Option<String>,
     pub context: String,
     pub namespace: String,
+    pub containers: Option<Vec<String>>,
+    /// Forma heredada (un solo contenedor); solo se usa si `containers` está ausente.
     pub container: Option<String>,
     pub label_selector: Option<String>,
     pub enabled: bool,

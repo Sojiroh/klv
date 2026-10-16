@@ -1,12 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use k8s_openapi::api::core::v1::Pod;
+use kube::api::{Api, ListParams};
+use kube::config::Kubeconfig;
 use serde::Serialize;
 use tauri::{command, State};
 
 use crate::error::{kube_error_message, KlvError};
 use crate::names::{validate_name, NameKind};
-use crate::state::AppState;
+use crate::state::{build_client, AppState};
 
 #[derive(Serialize, Clone)]
 pub struct PodInfo {
@@ -27,9 +30,6 @@ pub async fn get_pods(
 ) -> Result<Vec<PodInfo>, KlvError> {
     validate_name(NameKind::Namespace, &namespace)?;
     let client = state.get_client().await?;
-
-    use k8s_openapi::api::core::v1::Pod;
-    use kube::api::{Api, ListParams};
 
     let pods_api: Api<Pod> = Api::namespaced(client, &namespace);
     let mut lp = ListParams::default();
@@ -76,6 +76,49 @@ pub async fn get_pods(
         .collect();
 
     Ok(pods)
+}
+
+/// Nombres distintos (orden ascendente) de los contenedores de los pods del namespace.
+/// Sin `context` usa el cliente activo; con `context` construye uno propio desde el kubeconfig.
+#[command]
+pub async fn get_containers(
+    state: State<'_, Arc<AppState>>,
+    context: Option<String>,
+    namespace: String,
+    label: Option<String>,
+) -> Result<Vec<String>, KlvError> {
+    validate_name(NameKind::Namespace, &namespace)?;
+    let client = match context.as_deref().filter(|c| !c.is_empty()) {
+        None => state.get_client().await?,
+        Some(context) => {
+            let kubeconfig = Kubeconfig::read()
+                .map_err(|e| KlvError::new(format!("No se pudo leer kubeconfig: {e}")))?;
+            if !kubeconfig.contexts.iter().any(|c| c.name == context) {
+                return Err(KlvError::new(format!("Contexto \"{context}\" no existe")));
+            }
+            build_client(context).await.map_err(KlvError::new)?
+        }
+    };
+
+    let pods_api: Api<Pod> = Api::namespaced(client, &namespace);
+    let mut lp = ListParams::default();
+    if let Some(sel) = label.as_deref().filter(|s| !s.is_empty()) {
+        lp = lp.labels(sel);
+    }
+    let list = pods_api.list(&lp).await.map_err(|e| {
+        KlvError::new(format!(
+            "Error al obtener pods del namespace \"{namespace}\": {}",
+            kube_error_message(&e)
+        ))
+    })?;
+
+    let names: BTreeSet<String> = list
+        .items
+        .iter()
+        .filter_map(|pod| pod.spec.as_ref())
+        .flat_map(|spec| spec.containers.iter().map(|c| c.name.clone()))
+        .collect();
+    Ok(names.into_iter().collect())
 }
 
 fn get_age(timestamp: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>) -> String {

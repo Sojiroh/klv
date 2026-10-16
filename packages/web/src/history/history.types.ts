@@ -4,7 +4,7 @@ export interface CollectorTarget {
   id: string;
   context: string;
   namespace: string;
-  container?: string;
+  containers?: string[];
   labelSelector?: string;
   enabled: boolean;
   minLevel?: LogLevel;
@@ -15,6 +15,8 @@ export interface CollectorTargetInput {
   id?: string;
   context: string;
   namespace: string;
+  containers?: string[];
+  /** Legado: se acepta como `containers: [container]` */
   container?: string;
   labelSelector?: string;
   enabled: boolean;

@@ -10,10 +10,9 @@ use chrono::{DateTime, Utc};
 use futures::{AsyncBufReadExt, StreamExt};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
-use kube::config::KubeConfigOptions;
 use kube::runtime::watcher::{self, watcher, Event};
 use kube::runtime::WatchStreamExt;
-use kube::{Client, Config};
+use kube::Client;
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tokio::time::sleep;
 
@@ -22,6 +21,7 @@ use super::types::{CollectorStatus, CollectorStream, CollectorTarget, StreamStat
 use super::writer::{WriterMsg, WriterTx};
 use crate::error::kube_error_message;
 use crate::parser::log_parser::{level_priority, parse_log_line, LogLevel, ParsedLog};
+use crate::state::build_client;
 
 const INITIAL_TAIL: i64 = 1000;
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -359,9 +359,11 @@ impl Followers {
         for container in containers {
             if env
                 .target
-                .container
-                .as_deref()
-                .is_some_and(|wanted| wanted != container.name)
+                .containers
+                .as_ref()
+                .is_some_and(|wanted| {
+                    !wanted.is_empty() && !wanted.iter().any(|w| *w == container.name)
+                })
             {
                 continue;
             }
@@ -415,18 +417,6 @@ impl Followers {
             self.remove_pod(env, &pod);
         }
     }
-}
-
-async fn build_client(context: &str) -> Result<Client, String> {
-    let options = KubeConfigOptions {
-        context: Some(context.to_string()),
-        ..Default::default()
-    };
-    let config = Config::from_kubeconfig(&options)
-        .await
-        .map_err(|e| format!("No se pudo cargar la configuración del contexto \"{context}\": {e}"))?;
-    Client::try_from(config)
-        .map_err(|e| format!("No se pudo crear el cliente de Kubernetes: {e}"))
 }
 
 async fn connect(context: &str, runtime: &TargetRuntime) -> Client {

@@ -89,6 +89,18 @@ function matchRoute(url: string): RouteMatch | null {
     };
   }
 
+  const containersMatch = path.match(/^\/api\/containers\/([^/]+)$/);
+  if (containersMatch) {
+    return {
+      command: 'get_containers',
+      args: {
+        namespace: decodeURIComponent(containersMatch[1]),
+        context: params.get('context') || undefined,
+        label: params.get('label') || undefined,
+      },
+    };
+  }
+
   if (path === '/api/history/config') {
     return { command: 'history_get_config', args: {} };
   }

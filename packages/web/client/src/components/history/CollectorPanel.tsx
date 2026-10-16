@@ -13,6 +13,7 @@ import type {
 import { formatBytes, formatTimestamp } from '../../utils/log-utils';
 import ErrorNotice from '../ErrorNotice';
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon, TrashIcon } from '../explorer/icons';
+import ContainerPicker from './ContainerPicker';
 
 const MAX_TARGETS = 50;
 const MAX_SELECTOR_LENGTH = 1024;
@@ -27,7 +28,7 @@ interface DraftTarget {
   id?: string;
   context: string;
   namespace: string;
-  container: string;
+  containers: string[];
   labelSelector: string;
   enabled: boolean;
   minLevel?: LogLevel;
@@ -56,7 +57,7 @@ function toDraft(config: HistoryConfig): Draft {
       id: t.id,
       context: t.context,
       namespace: t.namespace,
-      container: t.container ?? '',
+      containers: t.containers ?? [],
       labelSelector: t.labelSelector ?? '',
       enabled: t.enabled,
       minLevel: t.minLevel,
@@ -73,7 +74,7 @@ function toInput(draft: Draft): HistoryConfigInput {
       id: t.id,
       context: t.context.trim(),
       namespace: t.namespace.trim(),
-      container: t.container.trim() || undefined,
+      containers: t.containers.length > 0 ? t.containers : undefined,
       labelSelector: t.labelSelector.trim() || undefined,
       enabled: t.enabled,
       minLevel: t.minLevel,
@@ -211,7 +212,7 @@ export default function CollectorPanel() {
               key: newKey(),
               context: contexts?.current ?? '',
               namespace: '',
-              container: '',
+              containers: [],
               labelSelector: '',
               enabled: true,
               exclude: '',
@@ -346,12 +347,12 @@ export default function CollectorPanel() {
                           />
                         </td>
                         <td className="py-2 px-3 min-w-[130px]">
-                          <input
-                            type="text"
-                            value={t.container}
-                            onChange={(e) => patchTarget(t.key, { container: e.target.value })}
-                            placeholder="all containers"
-                            className={cellInput}
+                          <ContainerPicker
+                            context={t.context}
+                            namespace={t.namespace}
+                            labelSelector={t.labelSelector}
+                            selected={t.containers}
+                            onChange={(containers) => patchTarget(t.key, { containers })}
                           />
                         </td>
                         <td className="py-2 px-3 min-w-[180px]">

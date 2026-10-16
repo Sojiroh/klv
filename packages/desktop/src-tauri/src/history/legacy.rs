@@ -26,7 +26,10 @@ fn read_config(db_path: &Path) -> rusqlite::Result<HistoryConfig> {
                 id: r.get(0)?,
                 context: r.get(1)?,
                 namespace: r.get(2)?,
-                container: r.get(3)?,
+                containers: r
+                    .get::<_, Option<String>>(3)?
+                    .filter(|c| !c.is_empty())
+                    .map(|c| vec![c]),
                 label_selector: r.get(4)?,
                 enabled: r.get(5)?,
                 min_level: None,

@@ -55,6 +55,32 @@ function validateExclude(label: string, value: unknown): string[] | undefined {
   return value.length === 0 ? undefined : (value as string[]);
 }
 
+const MAX_CONTAINERS = 50;
+
+// Acepta `containers` (arreglo) o el `container` legado (string) cuando `containers` falta
+function validateContainers(label: string, containers: unknown, legacy: unknown): string[] | undefined {
+  let list: unknown[];
+  if (containers != null) {
+    if (!Array.isArray(containers)) throw new BadRequestException(`${label}: containers debe ser un arreglo de strings`);
+    list = containers;
+  } else {
+    const single = optionalString(label, 'container', legacy);
+    list = single === undefined ? [] : [single];
+  }
+  const result: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string') throw new BadRequestException(`${label}: containers debe ser un arreglo de strings`);
+    const name = item.trim();
+    if (name === '' || result.includes(name)) continue;
+    assertK8sName('container', name);
+    result.push(name);
+  }
+  if (result.length > MAX_CONTAINERS) {
+    throw new BadRequestException(`${label}: containers admite hasta ${MAX_CONTAINERS} elementos`);
+  }
+  return result.length === 0 ? undefined : result;
+}
+
 function validateRetention(value: unknown): RetentionSettings {
   if (!isRecord(value)) throw new BadRequestException('retention debe ser un objeto');
   const { maxAgeDays, maxSizeMb } = value;
@@ -101,8 +127,7 @@ export function normalizeConfig(body: unknown, knownContexts: string[] | undefin
     assertK8sName('namespace', raw.namespace);
     if (typeof raw.enabled !== 'boolean') throw new BadRequestException(`${label}: enabled debe ser un booleano`);
 
-    const container = optionalString(label, 'container', raw.container);
-    if (container !== undefined) assertK8sName('container', container);
+    const containers = validateContainers(label, raw.containers, raw.container);
     const labelSelector = optionalString(label, 'labelSelector', raw.labelSelector);
     if (labelSelector !== undefined && labelSelector.length > MAX_SELECTOR_LENGTH) {
       throw new BadRequestException(`${label}: labelSelector no puede superar ${MAX_SELECTOR_LENGTH} caracteres`);
@@ -114,7 +139,7 @@ export function normalizeConfig(body: unknown, knownContexts: string[] | undefin
       id,
       context: raw.context,
       namespace: raw.namespace,
-      ...(container !== undefined && { container }),
+      ...(containers !== undefined && { containers }),
       ...(labelSelector !== undefined && { labelSelector }),
       enabled: raw.enabled,
       ...(minLevel !== undefined && { minLevel }),

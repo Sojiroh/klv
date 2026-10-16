@@ -25,6 +25,7 @@ use crate::names::{validate_name, NameKind};
 use crate::parser::log_parser::LogLevel;
 
 const MAX_TARGETS: usize = 50;
+const MAX_CONTAINERS: usize = 50;
 const MAX_SELECTOR_LEN: usize = 1024;
 const MAX_ID_LEN: usize = 64;
 const MAX_EXCLUDE_PATTERNS: usize = 20;
@@ -105,6 +106,35 @@ fn validate_exclude(
     Ok((!patterns.is_empty()).then_some(patterns))
 }
 
+/// Contenedores del target: `trim`, sin vacíos ni duplicados (conserva el orden), hasta 50 y
+/// cada uno un nombre válido; vacío = todos (`None`). El `container` heredado solo cuenta si
+/// `containers` está ausente.
+fn validate_containers(
+    containers: Option<Vec<String>>,
+    legacy: Option<String>,
+) -> Result<Option<Vec<String>>, KlvError> {
+    let raw = match containers {
+        Some(containers) => containers,
+        None => legacy.into_iter().collect(),
+    };
+    let mut names: Vec<String> = Vec::with_capacity(raw.len());
+    for name in raw {
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    if names.len() > MAX_CONTAINERS {
+        return Err(KlvError::new(format!(
+            "containers: el máximo es {MAX_CONTAINERS} contenedores"
+        )));
+    }
+    for name in &names {
+        validate_name(NameKind::Container, name)?;
+    }
+    Ok((!names.is_empty()).then_some(names))
+}
+
 /// Valida la configuración entrante (contrato Q5/C3) y asigna ids a los targets nuevos.
 fn validate_config(input: HistoryConfigInput) -> Result<HistoryConfig, KlvError> {
     if input.targets.len() > MAX_TARGETS {
@@ -150,6 +180,7 @@ fn validate_config(input: HistoryConfigInput) -> Result<HistoryConfig, KlvError>
             id,
             context,
             namespace,
+            containers,
             container,
             label_selector,
             enabled,
@@ -163,10 +194,7 @@ fn validate_config(input: HistoryConfigInput) -> Result<HistoryConfig, KlvError>
             )));
         }
         validate_name(NameKind::Namespace, &namespace)?;
-        let container = container.filter(|c| !c.is_empty());
-        if let Some(container) = &container {
-            validate_name(NameKind::Container, container)?;
-        }
+        let containers = validate_containers(containers, container)?;
         let label_selector = label_selector.filter(|s| !s.is_empty());
         if label_selector
             .as_deref()
@@ -191,7 +219,7 @@ fn validate_config(input: HistoryConfigInput) -> Result<HistoryConfig, KlvError>
             id,
             context,
             namespace,
-            container,
+            containers,
             label_selector,
             enabled,
             min_level,

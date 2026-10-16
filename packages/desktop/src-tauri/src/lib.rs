@@ -32,6 +32,7 @@ pub fn run() {
             commands::contexts::set_context,
             commands::namespaces::get_namespaces,
             commands::pods::get_pods,
+            commands::pods::get_containers,
             commands::deployments::get_deployments,
             commands::logs::get_pod_logs,
             commands::logs::get_container_logs,

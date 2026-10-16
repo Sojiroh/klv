@@ -22,7 +22,7 @@ function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
 function sameCollection(a: CollectorTarget, b: CollectorTarget): boolean {
   return a.context === b.context
     && a.namespace === b.namespace
-    && a.container === b.container
+    && sameList(a.containers, b.containers)
     && a.labelSelector === b.labelSelector
     && a.minLevel === b.minLevel
     && sameList(a.exclude, b.exclude);

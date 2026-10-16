@@ -87,7 +87,7 @@ Sintaxis del query:
 
 ### Historial local (retencion)
 
-El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + container y/o label selector opcionales), reconecta tras reinicios y rollouts, y guarda los logs en DuckDB + segmentos Parquet por hora comprimidos con zstd en `$KLV_DATA_DIR/segments/` (o `~/.klv/segments/`). `history.duckdb` contiene solo la hora en curso y los metadatos; `config.json` guarda los targets y la retencion. La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB) y borra archivos enteros, asi que es instantanea y no bloquea el servidor. El tamaño en disco es aprox. 1/8–1/15 del volumen crudo de logs JSON. Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
+El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + `containers` y/o label selector opcionales; `containers` es una lista, vacia = todos los containers, y en la UI se elige con un selector de checkboxes que consulta los containers del namespace), reconecta tras reinicios y rollouts, y guarda los logs en DuckDB + segmentos Parquet por hora comprimidos con zstd en `$KLV_DATA_DIR/segments/` (o `~/.klv/segments/`). `history.duckdb` contiene solo la hora en curso y los metadatos; `config.json` guarda los targets y la retencion. La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB) y borra archivos enteros, asi que es instantanea y no bloquea el servidor. El tamaño en disco es aprox. 1/8–1/15 del volumen crudo de logs JSON. Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
 
 Cada target admite filtros opcionales aplicados antes de guardar:
 
@@ -104,10 +104,11 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `PUT /api/contexts/:name` | Cambiar el contexto activo del servidor (solo en memoria, no modifica `~/.kube/config`) |
 | `GET /api/namespaces` | Listar namespaces |
 | `GET /api/pods/:namespace` | Listar pods |
+| `GET /api/containers/:namespace` | Nombres de container distintos y ordenados de los pods del namespace (query: `context`, `label`) |
 | `GET /api/deployments/:namespace` | Listar deployments |
 | `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
-| `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `minLevel` y `exclude` opcionales) y retencion |
+| `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `containers`, `minLevel` y `exclude` opcionales; el `container` legado se sigue aceptando) y retencion |
 | `GET /api/history/status` | Estadisticas del historial y estado de cada target |
 | `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
 | `POST /api/history/clear` | Borrar el historial |
@@ -155,6 +156,7 @@ npm run build:desktop
 | `set_context` | Cambiar el contexto activo (solo en memoria, no modifica `~/.kube/config`) |
 | `get_namespaces` | Listar namespaces |
 | `get_pods` | Listar pods de un namespace |
+| `get_containers` | Listar containers distintos de un namespace |
 | `get_deployments` | Listar deployments |
 | `get_pod_logs` | Logs parseados de un pod |
 | `get_container_logs` | Logs agregados por container |

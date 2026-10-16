@@ -220,9 +220,10 @@ export class TargetCollector {
     const client = this.client;
     if (client === undefined) return;
 
-    const wanted = this.target.container === undefined
+    const selected = this.target.containers;
+    const wanted = selected === undefined || selected.length === 0
       ? pod.containers
-      : pod.containers.filter((container) => container === this.target.container);
+      : pod.containers.filter((container) => selected.includes(container));
     let containers = this.followers.get(pod.name);
     if (containers === undefined) {
       containers = new Map();

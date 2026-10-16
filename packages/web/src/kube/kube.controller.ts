@@ -28,6 +28,15 @@ export class KubeController {
     return this.kubeService.getPods(namespace, label);
   }
 
+  @Get('containers/:namespace')
+  getContainers(
+    @Param('namespace') namespace: string,
+    @Query('context') context?: string,
+    @Query('label') label?: string,
+  ) {
+    return this.kubeService.getContainers(namespace, context, label);
+  }
+
   @Get('deployments/:namespace')
   getDeployments(@Param('namespace') namespace: string) {
     return this.kubeService.getDeployments(namespace);

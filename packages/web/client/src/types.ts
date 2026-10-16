@@ -84,7 +84,7 @@ export interface CollectorTarget {
   id: string;
   context: string;
   namespace: string;
-  container?: string;
+  containers?: string[];
   labelSelector?: string;
   enabled: boolean;
   minLevel?: LogLevel;
@@ -95,7 +95,7 @@ export interface CollectorTargetInput {
   id?: string;
   context: string;
   namespace: string;
-  container?: string;
+  containers?: string[];
   labelSelector?: string;
   enabled: boolean;
   minLevel?: LogLevel;

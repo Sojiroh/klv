@@ -3,9 +3,23 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use kube::Client;
+use kube::config::KubeConfigOptions;
+use kube::{Client, Config};
 
 use crate::error::KlvError;
+
+/// Cliente de Kubernetes propio para `context`, cargado del kubeconfig.
+pub async fn build_client(context: &str) -> Result<Client, String> {
+    let options = KubeConfigOptions {
+        context: Some(context.to_string()),
+        ..Default::default()
+    };
+    let config = Config::from_kubeconfig(&options)
+        .await
+        .map_err(|e| format!("No se pudo cargar la configuración del contexto \"{context}\": {e}"))?;
+    Client::try_from(config)
+        .map_err(|e| format!("No se pudo crear el cliente de Kubernetes: {e}"))
+}
 
 pub struct AppState {
     pub client: RwLock<Option<Client>>,

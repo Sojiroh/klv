@@ -19,7 +19,7 @@ function readLegacyConfig(dbPath: string): HistoryConfig {
         id: row.id,
         context: row.context,
         namespace: row.namespace,
-        container: row.container ?? undefined,
+        containers: row.container ? [row.container] : undefined,
         labelSelector: row.label_selector ?? undefined,
         enabled: row.enabled === 1,
       }));
