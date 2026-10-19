@@ -111,8 +111,8 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `GET /api/pods/:namespace` | Listar pods |
 | `GET /api/containers/:namespace` | Nombres de container distintos y ordenados de los pods del namespace (query: `context`, `label`) |
 | `GET /api/deployments/:namespace` | Listar deployments |
-| `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
-| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
+| `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod; la respuesta se limita a 32 MB de lineas: si se supera se conservan las mas recientes y se indica con `truncated` (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
+| `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods`; la respuesta se limita a 32 MB de lineas (repartidos entre los pods): si se supera se conservan las mas recientes y se indica con `truncatedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `containers`, `minLevel` y `exclude` opcionales; el `container` legado se sigue aceptando) y retencion |
 | `GET /api/history/status` | Estadisticas del historial y estado de cada target |
 | `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |

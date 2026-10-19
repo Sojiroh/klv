@@ -45,6 +45,8 @@ export interface LogsResponse {
   limit: number;
   pods?: string[];
   failedPods?: FailedPod[];
+  truncated?: boolean;
+  truncatedPods?: string[];
 }
 
 export interface ContextsResponse {

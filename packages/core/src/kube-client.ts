@@ -30,6 +30,80 @@ export interface LogOptions {
   timestamps?: boolean;
 }
 
+// Tope de caracteres de líneas por lectura de logs (32 MiB)
+export const MAX_LOG_READ_CHARS = 32 * 1024 * 1024;
+
+export interface LogRead {
+  // Líneas no vacías, de la más antigua a la más reciente
+  lines: string[];
+  // true si se descartaron líneas antiguas por superar el tope
+  truncated: boolean;
+}
+
+// Ventana de las líneas más recientes que caben en maxChars; los saltos de línea no cuentan
+class LogWindow {
+  private lines: string[] = [];
+  private head = 0;
+  private total = 0;
+  private partial = '';
+  private skipping = false;
+  private truncated = false;
+
+  constructor(private readonly maxChars: number) {}
+
+  push(chunk: string): void {
+    let start = 0;
+    if (this.skipping) {
+      const nl = chunk.indexOf('\n');
+      if (nl === -1) return;
+      this.skipping = false;
+      start = nl + 1;
+    }
+    let nl = chunk.indexOf('\n', start);
+    while (nl !== -1) {
+      this.addLine(this.partial + chunk.slice(start, nl));
+      this.partial = '';
+      start = nl + 1;
+      nl = chunk.indexOf('\n', start);
+    }
+    if (start < chunk.length) {
+      this.partial += chunk.slice(start);
+      if (this.partial.length > this.maxChars) {
+        // Línea más larga que el tope: se descarta hasta el siguiente salto de línea
+        this.partial = '';
+        this.skipping = true;
+        this.truncated = true;
+      }
+    }
+  }
+
+  finish(): LogRead {
+    if (this.partial) this.addLine(this.partial);
+    this.partial = '';
+    return { lines: this.lines.slice(this.head), truncated: this.truncated };
+  }
+
+  private addLine(line: string): void {
+    if (!line.trim()) return;
+    if (line.length > this.maxChars) {
+      this.truncated = true;
+      return;
+    }
+    this.lines.push(line);
+    this.total += line.length;
+    while (this.total > this.maxChars) {
+      this.total -= this.lines[this.head].length;
+      this.lines[this.head++] = '';
+      this.truncated = true;
+    }
+    // Compacta de vez en cuando para no retener huecos y evitar desplazamientos O(n²)
+    if (this.head > 1024 && this.head * 2 > this.lines.length) {
+      this.lines = this.lines.slice(this.head);
+      this.head = 0;
+    }
+  }
+}
+
 export interface StreamHandlers {
   onLine: (line: string, podName: string) => void;
   onError: (err: Error, podName: string) => void;
@@ -253,53 +327,40 @@ export class KubeClient {
     }
   }
 
-  async getLogs(options: LogOptions): Promise<string> {
+  // Lee solo las líneas más recientes que quepan en maxChars (streaming, sin materializar el cuerpo completo)
+  async getLogs(options: LogOptions, maxChars: number = MAX_LOG_READ_CHARS): Promise<LogRead> {
     assertK8sName('namespace', options.namespace);
     assertK8sName('pod', options.podName);
     if (options.container) assertK8sName('container', options.container);
     try {
-      // readNamespacedPodLog no expone sinceTime: esa consulta va por k8s.Log
-      if (options.sinceTime) return await this.readLogsSince(options, options.sinceTime);
-      const res = await this.coreApi.readNamespacedPodLog({
-        name: options.podName,
-        namespace: options.namespace,
-        container: options.container,
-        tailLines: options.tailLines ?? 100,
-        sinceSeconds: options.sinceSeconds,
-        previous: options.previous,
-        timestamps: options.timestamps,
+      const stream = new PassThrough();
+      stream.setEncoding('utf8');
+      const window = new LogWindow(maxChars);
+      const finished = new Promise<LogRead>((resolve, reject) => {
+        stream.on('data', (chunk: string) => window.push(chunk));
+        stream.on('end', () => resolve(window.finish()));
+        stream.on('error', reject);
+        // Log.log hace body.pipe(stream), que no propaga los errores del origen
+        stream.on('pipe', (source) => source.on('error', reject));
       });
-      return typeof res === 'string' ? res : String(res);
+      await new k8s.Log(this.kc).log(
+        encodeURIComponent(options.namespace),
+        encodeURIComponent(options.podName),
+        options.container ?? '',
+        stream,
+        {
+          // Con sinceTime solo se limita con tailLines si se indicó expresamente
+          tailLines: options.tailLines ?? (options.sinceTime ? undefined : 100),
+          sinceSeconds: options.sinceSeconds,
+          sinceTime: options.sinceTime,
+          previous: options.previous,
+          timestamps: options.timestamps,
+        }
+      );
+      return await finished;
     } catch (err) {
       throw toKubeError(err, `Error al obtener logs del pod "${options.podName}"`);
     }
-  }
-
-  // Lectura completa (sin follow) desde sinceTime; solo se limita con tailLines si se indicó expresamente
-  private async readLogsSince(options: LogOptions, sinceTime: string): Promise<string> {
-    const stream = new PassThrough();
-    stream.setEncoding('utf8');
-    const chunks: string[] = [];
-    const finished = new Promise<string>((resolve, reject) => {
-      stream.on('data', (chunk: string) => chunks.push(chunk));
-      stream.on('end', () => resolve(chunks.join('')));
-      stream.on('error', reject);
-      // Log.log hace body.pipe(stream), que no propaga los errores del origen
-      stream.on('pipe', (source) => source.on('error', reject));
-    });
-    await new k8s.Log(this.kc).log(
-      encodeURIComponent(options.namespace),
-      encodeURIComponent(options.podName),
-      options.container ?? '',
-      stream,
-      {
-        tailLines: options.tailLines,
-        previous: options.previous,
-        sinceTime,
-        timestamps: options.timestamps,
-      }
-    );
-    return finished;
   }
 
   // Lista los pods (ADDED por cada uno) y observa cambios desde esa versión. Nunca rechaza: los fallos

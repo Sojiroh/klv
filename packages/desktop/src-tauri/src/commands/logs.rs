@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +22,11 @@ const DEFAULT_TAIL: u64 = 100;
 const MAX_TAIL: u64 = 10_000;
 const MAX_LIMIT: usize = 10_000;
 const MAX_CONCURRENT_FETCHES: usize = 8;
+/// Presupuesto de bytes de línea por respuesta (las líneas más recientes que quepan).
+const MAX_LOG_READ_BYTES: usize = 32 * 1024 * 1024;
+/// Mínimo por pod cuando el presupuesto se reparte entre varios pods.
+const MIN_POD_READ_BYTES: usize = 64 * 1024;
+const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 const STREAM_TAIL: i64 = 50;
 const STREAM_MAX_PODS: usize = 100;
@@ -69,6 +75,10 @@ pub struct LogsResponse {
     pub pods: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed_pods: Option<Vec<FailedPod>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_pods: Option<Vec<String>>,
 }
 
 /// Parámetros de consulta ya validados (mismas reglas que la API HTTP).
@@ -149,17 +159,82 @@ fn paginate(mut logs: Vec<ParsedLog>, options: &QueryOptions) -> LogsResponse {
         limit: options.limit.unwrap_or(total),
         pods: None,
         failed_pods: None,
+        truncated: None,
+        truncated_pods: None,
     }
 }
 
-/// Descarga los logs de un pod (decodificación UTF-8 con pérdida) y devuelve las líneas
-/// parseadas que pasan el filtro.
+/// Ventana de las líneas más recientes que caben en un presupuesto de bytes. Las líneas
+/// llegan por trozos y nunca se acumula más de `max_bytes` de una línea en curso.
+struct NewestLines {
+    max_bytes: usize,
+    lines: VecDeque<String>,
+    total: usize,
+    current: Vec<u8>,
+    skipping: bool,
+    truncated: bool,
+}
+
+impl NewestLines {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            lines: VecDeque::new(),
+            total: 0,
+            current: Vec::new(),
+            skipping: false,
+            truncated: false,
+        }
+    }
+
+    /// Añade un fragmento de la línea en curso; si ésta supera el presupuesto se descarta
+    /// hasta el siguiente salto de línea.
+    fn push_bytes(&mut self, part: &[u8]) {
+        if self.skipping {
+            return;
+        }
+        if self.current.len() + part.len() > self.max_bytes {
+            self.current = Vec::new();
+            self.skipping = true;
+            self.truncated = true;
+            return;
+        }
+        self.current.extend_from_slice(part);
+    }
+
+    /// Cierra la línea en curso: descarta las vacías y expulsa las más antiguas que no quepan.
+    fn end_line(&mut self) {
+        if std::mem::take(&mut self.skipping) {
+            return;
+        }
+        let bytes = std::mem::take(&mut self.current);
+        let text = String::from_utf8_lossy(&bytes);
+        let line = text.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            return;
+        }
+        self.total += line.len();
+        self.lines.push_back(line.to_owned());
+        while self.total > self.max_bytes {
+            let Some(oldest) = self.lines.pop_front() else {
+                break;
+            };
+            self.total -= oldest.len();
+            self.truncated = true;
+        }
+    }
+}
+
+/// Descarga los logs de un pod (decodificación UTF-8 con pérdida), conserva sólo las líneas
+/// más recientes que caben en `max_bytes` y devuelve las parseadas que pasan el filtro,
+/// junto con si se descartaron líneas antiguas por tamaño.
 async fn fetch_pod_logs(
     api: &Api<Pod>,
     pod: &str,
     container: Option<&str>,
     options: &QueryOptions,
-) -> Result<Vec<ParsedLog>, KlvError> {
+    max_bytes: usize,
+) -> Result<(Vec<ParsedLog>, bool), KlvError> {
     let lp = LogParams {
         container: container.map(String::from),
         tail_lines: Some(options.tail),
@@ -178,19 +253,34 @@ async fn fetch_pod_logs(
         .map_err(|e| fetch_error(kube_error_message(&e)))?;
     futures::pin_mut!(reader);
 
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|e| fetch_error(e.to_string()))?;
+    let mut window = NewestLines::new(max_bytes);
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|e| fetch_error(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        let mut rest = &chunk[..n];
+        while let Some(newline) = rest.iter().position(|&b| b == b'\n') {
+            window.push_bytes(&rest[..newline]);
+            window.end_line();
+            rest = &rest[newline + 1..];
+        }
+        window.push_bytes(rest);
+    }
+    // Última línea sin salto de línea final
+    window.end_line();
 
-    let text = String::from_utf8_lossy(&bytes);
-    Ok(text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
+    let NewestLines { lines, truncated, .. } = window;
+    let logs = lines
+        .iter()
         .map(|line| parse_log_line(line, Some(pod)))
         .filter(|log| matches_filter(log, &options.filter))
-        .collect())
+        .collect();
+    Ok((logs, truncated))
 }
 
 #[command]
@@ -216,9 +306,18 @@ pub async fn get_pod_logs(
     let client = state.get_client().await?;
     let pods_api: Api<Pod> = Api::namespaced(client, &params.namespace);
 
-    let logs = fetch_pod_logs(&pods_api, &params.pod, params.container.as_deref(), &options).await?;
+    let (logs, truncated) = fetch_pod_logs(
+        &pods_api,
+        &params.pod,
+        params.container.as_deref(),
+        &options,
+        MAX_LOG_READ_BYTES,
+    )
+    .await?;
 
-    Ok(paginate(logs, &options))
+    let mut response = paginate(logs, &options);
+    response.truncated = Some(truncated);
+    Ok(response)
 }
 
 // Los argumentos son los de `invoke('get_container_logs', ...)` del cliente JS (planos, por nombre).
@@ -267,18 +366,22 @@ pub async fn get_container_logs(
             limit: 0,
             pods: Some(Vec::new()),
             failed_pods: Some(Vec::new()),
+            truncated: None,
+            truncated_pods: Some(Vec::new()),
         });
     }
 
+    let pod_budget = (MAX_LOG_READ_BYTES / matching_pods.len()).max(MIN_POD_READ_BYTES);
     // `buffered` conserva el orden de los pods, así `failedPods` es determinista
-    let results: Vec<(String, Result<Vec<ParsedLog>, KlvError>)> =
+    let results: Vec<(String, Result<(Vec<ParsedLog>, bool), KlvError>)> =
         futures::stream::iter(matching_pods.clone())
             .map(|pod| {
                 let api = &pods_api;
                 let options = &options;
                 let container = container.as_str();
                 async move {
-                    let result = fetch_pod_logs(api, &pod, Some(container), options).await;
+                    let result =
+                        fetch_pod_logs(api, &pod, Some(container), options, pod_budget).await;
                     (pod, result)
                 }
             })
@@ -288,10 +391,16 @@ pub async fn get_container_logs(
 
     let mut all_logs: Vec<ParsedLog> = Vec::new();
     let mut failed_pods: Vec<FailedPod> = Vec::new();
+    let mut truncated_pods: Vec<String> = Vec::new();
     let mut first_error: Option<KlvError> = None;
     for (pod, result) in results {
         match result {
-            Ok(logs) => all_logs.extend(logs),
+            Ok((logs, truncated)) => {
+                all_logs.extend(logs);
+                if truncated {
+                    truncated_pods.push(pod);
+                }
+            }
             Err(e) => {
                 failed_pods.push(FailedPod {
                     pod,
@@ -315,6 +424,7 @@ pub async fn get_container_logs(
     let mut response = paginate(all_logs, &options);
     response.pods = Some(matching_pods);
     response.failed_pods = Some(failed_pods);
+    response.truncated_pods = Some(truncated_pods);
     Ok(response)
 }
 

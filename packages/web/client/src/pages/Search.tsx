@@ -17,6 +17,7 @@ interface SearchResult {
   logs: ParsedLog[];
   failedPods: FailedPod[];
   capped: string[];
+  trimmed: string[];
   error: string | null;
 }
 
@@ -56,7 +57,12 @@ export default function Search() {
           `/api/pods/${ns}/container/${encodeURIComponent(container)}/logs?${query}`,
         );
         const logs = data.logs.map((l) => ({ ...l, namespace, container }));
-        return { logs, failedPods: data.failedPods ?? [], capped: cappedPods(logs, tail) };
+        return {
+          logs,
+          failedPods: data.failedPods ?? [],
+          capped: cappedPods(logs, tail),
+          trimmed: data.truncatedPods ?? [],
+        };
       }
 
       const podList = await apiRequest<Pod[]>(`/api/pods/${ns}`);
@@ -71,15 +77,17 @@ export default function Search() {
 
       const logs: ParsedLog[] = [];
       const failedPods: FailedPod[] = [];
+      const trimmed: string[] = [];
       settled.forEach((outcome, i) => {
         const { pod, container: c } = targets[i];
         if (outcome.status === 'fulfilled') {
+          if (outcome.value.truncated) trimmed.push(`${pod}/${c}`);
           for (const log of outcome.value.logs) logs.push({ ...log, namespace, container: c, podName: log.podName ?? pod });
         } else {
           failedPods.push({ pod: `${pod}/${c}`, error: errorMessage(outcome.reason) });
         }
       });
-      return { logs, failedPods, capped: cappedPods(logs, tail) };
+      return { logs, failedPods, capped: cappedPods(logs, tail), trimmed };
     };
 
     load().then(
@@ -90,7 +98,7 @@ export default function Search() {
         setResult({ key: loadKey, error: null, ...data });
       },
       (err: unknown) => {
-        if (!cancelled) setResult({ key: loadKey, logs: [], failedPods: [], capped: [], error: errorMessage(err) });
+        if (!cancelled) setResult({ key: loadKey, logs: [], failedPods: [], capped: [], trimmed: [], error: errorMessage(err) });
       },
     );
 
@@ -156,7 +164,7 @@ export default function Search() {
         notices={
           <>
             <FailedPodsWarning failedPods={current?.failedPods} />
-            <CappedWarning capped={current?.capped ?? []} tail={tail} />
+            <CappedWarning capped={current?.capped ?? []} trimmed={current?.trimmed ?? []} tail={tail} />
           </>
         }
       />

@@ -61,6 +61,11 @@ export default function Logs() {
     return [...counts].filter(([, n]) => n >= tail).map(([name]) => name);
   }, [logs, tail]);
 
+  const trimmed = useMemo(
+    () => (isAggregated ? (data?.truncatedPods ?? []) : data?.truncated && pod ? [pod] : []),
+    [isAggregated, data, pod],
+  );
+
   return (
     <div className="stagger-children">
       {/* Header */}
@@ -132,7 +137,7 @@ export default function Logs() {
         notices={
           <>
             <FailedPodsWarning failedPods={data?.failedPods} />
-            <CappedWarning capped={capped} tail={tail} />
+            <CappedWarning capped={capped} trimmed={trimmed} tail={tail} />
           </>
         }
       />

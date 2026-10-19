@@ -52,8 +52,8 @@ export class KubeService {
     return this.client.getDeployments(namespace);
   }
 
-  getLogs(options: LogOptions) {
-    return this.client.getLogs(options);
+  getLogs(options: LogOptions, maxChars?: number) {
+    return this.client.getLogs(options, maxChars);
   }
 
   getClient() {

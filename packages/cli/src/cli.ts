@@ -200,7 +200,7 @@ program
 
       spinner.start(`Obteniendo logs de ${podName}...`);
 
-      const rawLogs = await client.getLogs({
+      const read = await client.getLogs({
         namespace: opts.namespace,
         podName,
         container,
@@ -211,7 +211,13 @@ program
 
       spinner.stop();
 
-      const lines = rawLogs.split('\n').filter((l) => l.trim());
+      const lines = read.lines;
+
+      if (read.truncated) {
+        console.log(
+          chalk.yellow('\n  ⚠ Se descartaron las líneas más antiguas porque los logs superaban 32 MB')
+        );
+      }
 
       if (lines.length === 0) {
         console.log(chalk.yellow('\n  No se encontraron logs\n'));
@@ -419,19 +425,20 @@ program
       const results: ParsedLog[] = [];
       const failed: { target: string; message: string }[] = [];
       let searched = 0;
+      let truncatedTargets = 0;
 
       for (const pod of pods) {
         for (const container of pod.containers) {
           try {
-            const raw = await client.getLogs({
+            const read = await client.getLogs({
               namespace: opts.namespace,
               podName: pod.name,
               container,
               tailLines: parseInt(cmdOpts.tail, 10),
             });
 
-            const lines = raw.split('\n').filter((l) => l.trim());
-            const parsed = lines.map((line) => parseLogLine(line, pod.name));
+            if (read.truncated) truncatedTargets++;
+            const parsed = read.lines.map((line) => parseLogLine(line, pod.name));
             results.push(...parsed.filter((log) => matchesFilter(log, filter)));
             searched++;
           } catch (err) {
@@ -442,7 +449,12 @@ program
 
       spinner.stop();
 
-      const printFailures = (): void => {
+      const printNotices = (): void => {
+        if (truncatedTargets > 0) {
+          console.log(
+            chalk.yellow(`\n  ⚠ En ${truncatedTargets} contenedor(es) se descartaron las líneas más antiguas porque los logs superaban 32 MB`)
+          );
+        }
         if (failed.length === 0) return;
         console.log(chalk.yellow(`\n  ⚠ No se pudieron leer ${failed.length} contenedor(es):`));
         failed.forEach((f) => console.log(chalk.yellow(`    - ${f.target}: ${f.message}`)));
@@ -450,7 +462,7 @@ program
 
       if (results.length === 0) {
         console.log(chalk.yellow(`\n  No se encontró "${term}" en ${searched} contenedor(es) de ${pods.length} pod(s)`));
-        printFailures();
+        printNotices();
         console.log();
         return;
       }
@@ -462,7 +474,7 @@ program
         console.log(formatLog(log, { showPodName: true }));
       });
 
-      printFailures();
+      printNotices();
       console.log();
     } catch (err) {
       spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));

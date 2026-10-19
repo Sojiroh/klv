@@ -3,6 +3,7 @@ import {
   parseLogLine,
   matchesFilter,
   compareLogsByTime,
+  MAX_LOG_READ_CHARS,
   type ParsedLog,
   type LogFilter,
   type LogLevel,
@@ -16,10 +17,11 @@ export interface AggregatedLogs {
   limit: number;
   pods: string[];
   failedPods: { pod: string; error: string }[];
+  truncatedPods: string[];
 }
 
 type PodFailure = { pod: string; error: unknown };
-type PodResult = { pod: string; logs: ParsedLog[] } | PodFailure;
+type PodResult = { pod: string; logs: ParsedLog[]; truncated: boolean } | PodFailure;
 
 @Injectable()
 export class LogService {
@@ -36,8 +38,14 @@ export class LogService {
     search?: string;
     limit?: number;
     offset?: number;
-  }): Promise<{ logs: ParsedLog[]; total: number; offset: number; limit: number }> {
-    const raw = await this.kubeService.getLogs({
+  }): Promise<{
+    logs: ParsedLog[];
+    total: number;
+    offset: number;
+    limit: number;
+    truncated: boolean;
+  }> {
+    const read = await this.kubeService.getLogs({
       namespace: options.namespace,
       podName: options.pod,
       container: options.container,
@@ -47,8 +55,7 @@ export class LogService {
       timestamps: true,
     });
 
-    const lines = raw.split('\n').filter((l) => l.trim());
-    const parsed = lines.map((line) => parseLogLine(line, options.pod));
+    const parsed = read.lines.map((line) => parseLogLine(line, options.pod));
 
     const filter: LogFilter = {};
     if (options.level) filter.minLevel = options.level;
@@ -64,6 +71,7 @@ export class LogService {
       total: filtered.length,
       offset: start,
       limit: options.limit ?? filtered.length,
+      truncated: read.truncated,
     };
   }
 
@@ -84,24 +92,35 @@ export class LogService {
     );
 
     if (matchingPods.length === 0) {
-      return { logs: [], total: 0, offset: 0, limit: 0, pods: [], failedPods: [] };
+      return { logs: [], total: 0, offset: 0, limit: 0, pods: [], failedPods: [], truncatedPods: [] };
     }
 
     const tailPerPod = options.tail ?? 100;
+    // El presupuesto total se reparte entre los pods para acotar el tamaño de la respuesta
+    const perPodChars = Math.max(
+      Math.floor(MAX_LOG_READ_CHARS / matchingPods.length),
+      64 * 1024,
+    );
     const results = await Promise.all(
       matchingPods.map(async (pod): Promise<PodResult> => {
         try {
-          const raw = await this.kubeService.getLogs({
-            namespace: options.namespace,
-            podName: pod.name,
-            container: options.container,
-            tailLines: tailPerPod,
-            sinceSeconds: options.since,
-            previous: options.previous,
-            timestamps: true,
-          });
-          const lines = raw.split('\n').filter((l) => l.trim());
-          return { pod: pod.name, logs: lines.map((line) => parseLogLine(line, pod.name)) };
+          const read = await this.kubeService.getLogs(
+            {
+              namespace: options.namespace,
+              podName: pod.name,
+              container: options.container,
+              tailLines: tailPerPod,
+              sinceSeconds: options.since,
+              previous: options.previous,
+              timestamps: true,
+            },
+            perPodChars,
+          );
+          return {
+            pod: pod.name,
+            logs: read.lines.map((line) => parseLogLine(line, pod.name)),
+            truncated: read.truncated,
+          };
         } catch (err) {
           return { pod: pod.name, error: err };
         }
@@ -115,6 +134,7 @@ export class LogService {
       pod: f.pod,
       error: f.error instanceof Error ? f.error.message : String(f.error),
     }));
+    const truncatedPods = results.filter((r) => 'logs' in r && r.truncated).map((r) => r.pod);
     const allParsed = results.flatMap((r) => ('logs' in r ? r.logs : []));
     allParsed.sort(compareLogsByTime);
 
@@ -134,6 +154,7 @@ export class LogService {
       limit: options.limit ?? filtered.length,
       pods: matchingPods.map((p) => p.name),
       failedPods,
+      truncatedPods,
     };
   }
 }
