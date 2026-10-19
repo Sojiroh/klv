@@ -25,6 +25,8 @@ interface Props {
   onViewContext: (log: ParsedLog) => void;
   /** True while a stacked dialog (context view) is open, so Escape does not close this panel. */
   suspendKeys?: boolean;
+  /** Opened from the context view: rendered above that dialog instead of above the page. */
+  stacked?: boolean;
 }
 
 const iconButton =
@@ -39,6 +41,7 @@ export default function LogDetailPanel({
   onOpenTrace,
   onViewContext,
   suspendKeys = false,
+  stacked = false,
 }: Props) {
   const [copied, setCopied] = useState<'ok' | 'failed' | null>(null);
 
@@ -131,13 +134,13 @@ export default function LogDetailPanel({
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-slate-900/30 z-40 animate-fade-in" onClick={onClose} />
+      <div className={`fixed inset-0 bg-slate-900/30 ${stacked ? 'z-[70]' : 'z-40'} animate-fade-in`} onClick={onClose} />
 
       {/* Panel */}
       <div
-        className="fixed top-0 right-0 h-full w-full sm:w-[540px] lg:w-[640px]
-                    bg-klv-surface border-l border-klv-border z-50
-                    animate-slide-in-right"
+        className={`fixed top-0 right-0 h-full w-full sm:w-[540px] lg:w-[640px]
+                    bg-klv-surface border-l border-klv-border ${stacked ? 'z-[80]' : 'z-50'}
+                    animate-slide-in-right`}
       >
         <div className="h-full flex flex-col">
           {/* Header */}

@@ -23,6 +23,11 @@ interface Props {
   log: ParsedLog;
   source: 'kubelet' | 'history';
   scope: ContextScope;
+  /** Line whose details are open on top of this dialog; the anchor line is highlighted otherwise. */
+  selected: ParsedLog | null;
+  onSelect: (log: ParsedLog) => void;
+  /** True while that details panel is open, so Escape closes it instead of this dialog. */
+  suspendKeys: boolean;
   onClose: () => void;
 }
 
@@ -67,10 +72,11 @@ async function fetchWindow(log: ParsedLog, source: Props['source'], scope: Conte
     `/api/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/logs?${params}`,
     { signal },
   );
-  return response.logs;
+  // Same scope fields the explorer adds to its own lines, so the details panel shows them
+  return response.logs.map((line) => ({ ...line, namespace, ...(container !== undefined && { container }) }));
 }
 
-export default function ContextView({ log, source, scope, onClose }: Props) {
+export default function ContextView({ log, source, scope, selected, onSelect, suspendKeys, onClose }: Props) {
   const [state, setState] = useState<State>({ status: 'loading' });
 
   useEffect(() => {
@@ -98,6 +104,7 @@ export default function ContextView({ log, source, scope, onClose }: Props) {
   }, [log, source, scope]);
 
   useEffect(() => {
+    if (suspendKeys) return;
     // Capture phase + stopPropagation so Escape only closes this dialog, not the detail panel below it.
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -106,7 +113,7 @@ export default function ContextView({ log, source, scope, onClose }: Props) {
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  }, [onClose, suspendKeys]);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-8">
@@ -149,7 +156,8 @@ export default function ContextView({ log, source, scope, onClose }: Props) {
               logs={state.lines}
               columns={COLUMNS}
               maxHeight="calc(100vh - 220px)"
-              selected={state.lines[state.index]}
+              selected={selected ?? state.lines[state.index]}
+              onSelect={onSelect}
               scrollToIndex={state.index}
             />
           )}

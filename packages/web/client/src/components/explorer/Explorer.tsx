@@ -67,6 +67,8 @@ export default function Explorer({
   const { query, setQuery, range, setRange, view, pattern, columns, setColumns, setPattern } = params;
   const [selected, setSelected] = useState<ParsedLog | null>(null);
   const [contextLog, setContextLog] = useState<ParsedLog | null>(null);
+  // Details of a line picked inside the context dialog (a second panel stacked above it)
+  const [contextSelected, setContextSelected] = useState<ParsedLog | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [facetsOpen, setFacetsOpen] = usePersistentState('klv.explorer.facets', true);
 
@@ -104,19 +106,31 @@ export default function Explorer({
 
   const toggleColumn = (id: ColumnId) => setColumns(columns.includes(id) ? withoutColumn(columns, id) : withColumn(columns, id));
 
-  const openTrace = (kind: 'trace' | 'span', id: string) => {
+  const closeContext = useCallback(() => {
+    setContextSelected(null);
+    setContextLog(null);
+  }, []);
+
+  const viewContext = (log: ParsedLog) => {
+    setContextSelected(null);
+    setContextLog(log);
+  };
+
+  // `from` is the log whose panel triggered the search: its namespace/context scope the new query
+  const openTrace = (kind: 'trace' | 'span', id: string, from: ParsedLog | null) => {
     const next = new URLSearchParams({ q: fieldClause(kind, id) });
     for (const key of ['range', 'from', 'to']) {
       const value = params.searchParams.get(key);
       if (value) next.set(key, value);
     }
-    const ns = selected?.namespace ?? namespace;
+    const ns = from?.namespace ?? namespace;
     if (ns) next.set('ns', ns);
     if (source === 'history') {
-      const ctx = selected?.context ?? context;
+      const ctx = from?.context ?? context;
       if (ctx) next.set('ctx', ctx);
     }
     setSelected(null);
+    closeContext();
     navigate(`${source === 'history' ? '/history' : '/search'}?${next}`);
   };
 
@@ -259,12 +273,35 @@ export default function Explorer({
         onClose={() => setSelected(null)}
         onFilter={applyClause}
         onToggleColumn={toggleColumn}
-        onOpenTrace={openTrace}
-        onViewContext={setContextLog}
+        onOpenTrace={(kind, id) => openTrace(kind, id, selected)}
+        onViewContext={viewContext}
       />
 
       {contextLog && (
-        <ContextView log={contextLog} source={source} scope={contextScope} onClose={() => setContextLog(null)} />
+        <>
+          <ContextView
+            log={contextLog}
+            source={source}
+            scope={contextScope}
+            selected={contextSelected}
+            onSelect={setContextSelected}
+            suspendKeys={contextSelected !== null}
+            onClose={closeContext}
+          />
+          <LogDetailPanel
+            log={contextSelected}
+            stacked
+            columns={columns}
+            onClose={() => setContextSelected(null)}
+            onFilter={(clause, mode) => {
+              applyClause(clause, mode);
+              closeContext();
+            }}
+            onToggleColumn={toggleColumn}
+            onOpenTrace={(kind, id) => openTrace(kind, id, contextSelected)}
+            onViewContext={viewContext}
+          />
+        </>
       )}
     </>
   );
