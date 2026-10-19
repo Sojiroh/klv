@@ -71,7 +71,8 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 - **Histograma** de volumen por nivel con selector de rango (15m, 1h, 4h, 24h, 7d, 30d o custom) y zoom arrastrando
 - **Columnas configurables** (incluye atributos `@campo`) y **export** a CSV/JSON
 - **Patrones**: agrupa mensajes similares (numeros, IDs, UUIDs, IPs, timestamps normalizados) con conteo por nivel
-- **Ver en contexto** (lineas alrededor en el mismo pod) y navegacion por `traceId`
+- **Vista raw interactiva** en el panel de detalle: click en una clave o valor del JSON para filtrar por el valor (`@http.method:POST`), por existencia del campo (`@http.method:*`), excluir, añadir como columna o copiar. Las claves que el parser extrae a campos propios usan ese campo (`dd.trace_id` → `trace:`, `msg` → `message:`, `status` → `level:`); solo se ofrecen filtros que el propio log cumple
+- **Ver en contexto** (lineas alrededor en el mismo pod; click en una linea abre su detalle encima) y navegacion por `traceId`
 - **Logs del contenedor anterior** (`previous`) para diagnosticar CrashLoopBackOff
 
 Sintaxis del query:

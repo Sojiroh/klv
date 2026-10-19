@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { type ParsedLog } from '../types';
 import type { ColumnId } from '../lib/columns';
 import { fieldClause } from '../lib/query';
-import { formatTimestamp, levelConfig, prettyRaw } from '../utils/log-utils';
+import { formatTimestamp, levelConfig } from '../utils/log-utils';
+import RawJsonView from './RawJsonView';
 import { flattenExtra } from './explorer/clauses';
 import { ArrowRightIcon, ColumnsIcon, CopyIcon, MinusIcon, PlusIcon, XIcon } from './explorer/icons';
 
@@ -63,7 +64,6 @@ export default function LogDetailPanel({
   if (!log) return null;
 
   const cfg = levelConfig[log.level] ?? levelConfig.UNKNOWN;
-  const raw = log.isJson ? prettyRaw(log.raw) : log.raw;
 
   const copyRaw = () => {
     navigator.clipboard.writeText(log.raw).then(
@@ -237,11 +237,13 @@ export default function LogDetailPanel({
             )}
 
             <section>
-              <h3 className="klv-section-label mb-2">Raw</h3>
-              <pre className="text-xs text-klv-text-secondary font-mono bg-klv-base rounded-lg
-                              border border-klv-border p-4 overflow-auto whitespace-pre-wrap">
-                {raw}
-              </pre>
+              <h3 className="klv-section-label mb-2">
+                Raw
+                {log.isJson && (
+                  <span className="ml-2 normal-case tracking-normal font-normal">· click a key or value to filter</span>
+                )}
+              </h3>
+              <RawJsonView log={log} columns={columns} onFilter={onFilter} onToggleColumn={onToggleColumn} />
             </section>
           </div>
         </div>

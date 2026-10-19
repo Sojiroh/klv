@@ -100,7 +100,7 @@ export function columnValue(log: QueryableLog, id: ColumnId): string {
   }
 }
 
-function isColumnId(value: string): value is ColumnId {
+export function isColumnId(value: string): value is ColumnId {
   return BUILTIN_COLUMNS.includes(value as ColumnId) || /^@[^,\s]+$/.test(value);
 }
 

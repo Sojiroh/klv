@@ -32,6 +32,20 @@ const ERROR_FIELDS = ['error', 'err', 'exception', 'error_message'];
 const STACK_FIELDS = ['stack', 'stackTrace', 'stack_trace', 'error.stack_trace'];
 const CALLER_FIELDS = ['caller', 'source', 'class', 'method', 'function'];
 
+// Claves crudas (planas o rutas con puntos) de las que se lee cada campo de ParsedLog direccionable por la
+// consulta, en orden de precedencia. `status` solo aporta el nivel cuando es un alias de texto (ver levelFromStatus).
+export const PARSED_FIELD_KEYS: Record<'level' | 'message' | 'service' | 'env' | 'version' | 'traceId' | 'spanId' | 'caller' | 'error', readonly string[]> = {
+  level: [...LEVEL_FIELDS, 'status'],
+  message: MESSAGE_FIELDS,
+  service: SERVICE_FIELDS,
+  env: ENV_FIELDS,
+  version: VERSION_FIELDS,
+  traceId: TRACE_FIELDS,
+  spanId: SPAN_FIELDS,
+  caller: CALLER_FIELDS,
+  error: ERROR_FIELDS,
+};
+
 // Tags de Datadog dentro del objeto anidado `dd`
 const DD_TAGS = ['trace_id', 'span_id', 'service', 'env', 'version'];
 // Campos "conocidos" que se extraen y no van en extra

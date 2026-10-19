@@ -1,11 +1,12 @@
 import { quoteQueryValue } from '@klv/query';
 
-export { parseQuery, matchesQuery, quoteQueryValue } from '@klv/query';
+export { parseQuery, matchesQuery, quoteQueryValue, rawFieldFilter } from '@klv/query';
 export type {
   QueryField,
   QueryNode,
   QueryParseResult,
   QueryableLog,
+  RawFieldFilter,
   ReservedField,
 } from '@klv/query';
 

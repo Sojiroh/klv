@@ -1,5 +1,5 @@
 // Lenguaje de consulta de logs (estilo Datadog). Módulo puro: sin imports de Node, también se empaqueta en el navegador.
-import { LEVEL_PRIORITY, parseLevel } from './log-parser.js';
+import { LEVEL_PRIORITY, PARSED_FIELD_KEYS, parseLevel } from './log-parser.js';
 import type { LogLevel, ParsedLog } from './log-parser.js';
 
 export type ReservedField =
@@ -566,4 +566,78 @@ export function matchesQuery(log: QueryableLog, ast: QueryNode | null): boolean 
 export function quoteQueryValue(value: string): string {
   if (/^[A-Za-z0-9._\-/@]+$/.test(value) && !Object.hasOwn(KEYWORDS, value)) return value;
   return `"${value.replace(/[\\"]/g, '\\$&')}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Filtros desde el JSON crudo de un log
+// ---------------------------------------------------------------------------
+
+type ParsedFieldKey = keyof typeof PARSED_FIELD_KEYS;
+
+// Campo reservado que direcciona cada campo de ParsedLog leído de claves crudas
+const PROPERTY_FIELDS: Record<ParsedFieldKey, ReservedField> = {
+  level: 'level',
+  message: 'message',
+  service: 'service',
+  env: 'env',
+  version: 'version',
+  traceId: 'trace',
+  spanId: 'span',
+  caller: 'caller',
+  error: 'error',
+};
+
+export interface RawFieldFilter {
+  /** Campo tal como se escribe en la consulta: `service`, `@http.status`, … */
+  field: string;
+  /** `campo:*`: el log tiene el campo. */
+  exists: string;
+  /** `campo:valor`, o null si el valor no se puede expresar como un filtro que acepte este log. */
+  equals: string | null;
+}
+
+// La cláusula vale solo si se analiza como ese único campo y operador y el propio log la cumple: descarta
+// claves sombreadas por otra de mayor precedencia y rutas que el lexer no puede expresar
+function acceptedClause(log: QueryableLog, clause: string, field: QueryField, op: 'exists' | 'eq'): string | null {
+  const parsed = parseQuery(clause);
+  if (!parsed.ok || parsed.ast === null || parsed.ast.type !== 'field') return null;
+  const { ast } = parsed;
+  const target = ast.field;
+  const same = field.kind === 'reserved'
+    ? target.kind === 'reserved' && target.name === field.name
+    : target.kind === 'attr' && target.path === field.path;
+  return ast.op === op && same && matchesQuery(log, ast) ? clause : null;
+}
+
+/**
+ * Filtro para el nodo del JSON crudo de `log` en `path` (claves unidas con `.`; los elementos de un arreglo
+ * usan la ruta del arreglo) cuyo valor es `value`. Lo que sigue en `extra` se filtra como `@ruta`; las claves
+ * de las que el parser extrajo un campo propio, con ese campo (`dd.trace_id` → `trace`, `msg` → `message`,
+ * `status` → `level`). null cuando ninguna consulta direcciona el nodo.
+ */
+export function rawFieldFilter(log: QueryableLog, path: string, value: unknown): RawFieldFilter | null {
+  let field: QueryField | undefined;
+  let property: ParsedFieldKey | undefined;
+  if (resolveAttribute(log.extra, path) !== undefined) {
+    field = { kind: 'attr', path };
+  } else {
+    property = (Object.keys(PARSED_FIELD_KEYS) as ParsedFieldKey[]).find(
+      (key) => PARSED_FIELD_KEYS[key].includes(path) && log[key] !== undefined,
+    );
+    if (property !== undefined) field = { kind: 'reserved', name: PROPERTY_FIELDS[property] };
+  }
+  if (field === undefined) return null;
+
+  const name = field.kind === 'attr' ? `@${field.path}` : field.name;
+  const exists = acceptedClause(log, `${name}:*`, field, 'exists');
+  if (exists === null) return null;
+
+  let text: string | undefined;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    // El nivel se filtra por su forma normalizada (`30` de pino → `level:info`)
+    if (property !== 'level') text = String(value);
+    else if (parseLevel(value) === log.level) text = log.level.toLowerCase();
+  }
+  const equals = text ? acceptedClause(log, `${name}:${quoteQueryValue(text)}`, field, 'eq') : null;
+  return { field: name, exists, equals };
 }
