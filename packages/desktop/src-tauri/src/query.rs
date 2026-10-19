@@ -335,31 +335,45 @@ fn compare_number(
 }
 
 /// Glob insensible a mayúsculas (ambos textos ya en minúsculas): `*` = cualquier tramo de
-/// caracteres. `anchored` exige coincidir con todo `text`; si no, basta una aparición.
+/// caracteres (también vacío) y `?` = exactamente un `char`. `anchored` exige coincidir con todo
+/// `text`; si no, basta una aparición (equivale a anclar `*patrón*`).
 fn glob_match(text: &str, pattern: &str, anchored: bool) -> bool {
-    let segments: Vec<&str> = pattern.split('*').collect();
-
-    // Busca los tramos en orden dentro de `window`, consumiéndola
-    let find_all = |mut window: &str, segs: &[&str]| {
-        segs.iter().all(|seg| match window.find(seg) {
-            Some(i) => {
-                window = &window[i + seg.len()..];
-                true
+    let (mut t, mut p) = (text, pattern);
+    // Último `*` visto: (resto del patrón tras él, resto del texto desde donde reintentar).
+    // Sin anclar, hay un `*` implícito al inicio.
+    let mut star: Option<(&str, &str)> = if anchored { None } else { Some((p, t)) };
+    loop {
+        match p.chars().next() {
+            Some('*') => {
+                p = p.trim_start_matches('*');
+                star = Some((p, t));
+                continue;
             }
-            None => false,
-        })
-    };
-
-    if !anchored {
-        return find_all(text, &segments);
+            Some(pc) => {
+                if let Some(tc) = t.chars().next() {
+                    if pc == '?' || pc == tc {
+                        p = &p[pc.len_utf8()..];
+                        t = &t[tc.len_utf8()..];
+                        continue;
+                    }
+                }
+            }
+            // Patrón agotado: sin anclar sobra un `*` implícito al final
+            None if !anchored || t.is_empty() => return true,
+            None => {}
+        }
+        // Fallo: el último `*` absorbe un carácter más del texto y se reintenta
+        let Some((resume_pattern, resume_text)) = star else {
+            return false;
+        };
+        let Some(skipped) = resume_text.chars().next() else {
+            return false;
+        };
+        let resume_text = &resume_text[skipped.len_utf8()..];
+        star = Some((resume_pattern, resume_text));
+        p = resume_pattern;
+        t = resume_text;
     }
-    let [first, middle @ .., last] = segments.as_slice() else {
-        // Sin `*` el patrón es un único tramo: igualdad exacta
-        return text == pattern;
-    };
-    text.strip_prefix(*first)
-        .and_then(|rest| rest.strip_suffix(*last))
-        .is_some_and(|window| find_all(window, middle))
 }
 
 // ---------------------------------------------------------------------------

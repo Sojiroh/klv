@@ -178,8 +178,8 @@ const TRACE_FIELDS: &[&str] = &[
     "correlationId",
 ];
 const SPAN_FIELDS: &[&str] = &["dd.span_id", "dd_span_id", "span_id", "spanId", "span-id"];
-const ERROR_FIELDS: &[&str] = &["error", "err", "exception", "error_message"];
-const STACK_FIELDS: &[&str] = &["stack", "stackTrace", "stack_trace", "error.stack_trace"];
+const ERROR_FIELDS: &[&str] = &["error.message", "error", "err", "exception", "error_message"];
+const STACK_FIELDS: &[&str] = &["error.stack", "stack", "stackTrace", "stack_trace", "error.stack_trace"];
 const CALLER_FIELDS: &[&str] = &["caller", "source", "class", "method", "function"];
 
 // Etiquetas del tracer de Datadog dentro de un objeto `dd` anidado (se hoistean a campos propios)
@@ -413,19 +413,36 @@ pub fn parse_log_line(line: &str, pod_name: Option<&str>) -> ParsedLog {
     let trace_id = find_field(&record, TRACE_FIELDS);
     let span_id = find_field(&record, SPAN_FIELDS);
     let caller = find_field(&record, CALLER_FIELDS);
-    let error = find_field(&record, ERROR_FIELDS);
+    // Un `error` objeto (estándar Datadog) nunca se convierte a texto: se hoistean message/stack y el resto queda en extra
+    let error_is_object = matches!(record.get("error"), Some(Value::Object(_)));
+    let error = if error_is_object {
+        let candidates: Vec<&str> = ERROR_FIELDS.iter().copied().filter(|f| *f != "error").collect();
+        find_field(&record, &candidates)
+    } else {
+        find_field(&record, ERROR_FIELDS)
+    };
     let stack_trace = find_field(&record, STACK_FIELDS);
 
     // Todo lo que no es un campo conocido, en el orden del JSON original.
     // `status` solo se excluye cuando aportó el nivel.
-    let mut extra: Map<String, Value> = record
-        .into_iter()
-        .filter(|(key, value)| {
-            !KNOWN_FIELDS.contains(key.as_str())
-                && !value.is_null()
-                && !(status_is_level && key == "status")
-        })
-        .collect();
+    let mut extra: Map<String, Value> = Map::new();
+    for (key, value) in record {
+        if status_is_level && key == "status" {
+            continue;
+        }
+        if key == "error" {
+            if let Value::Object(mut obj) = value {
+                obj.retain(|k, _| !matches!(k.as_str(), "message" | "stack" | "stack_trace"));
+                if !obj.is_empty() {
+                    extra.insert(key, Value::Object(obj));
+                }
+            }
+            continue;
+        }
+        if !KNOWN_FIELDS.contains(key.as_str()) && !value.is_null() {
+            extra.insert(key, value);
+        }
+    }
 
     // Las etiquetas del tracer ya son campos de primer nivel: se quitan de `dd` para no duplicar facetas
     if let Some(Value::Object(dd)) = extra.get_mut("dd") {

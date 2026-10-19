@@ -28,8 +28,8 @@ const ENV_FIELDS = ['dd.env', 'dd_env', 'env'];
 const VERSION_FIELDS = ['dd.version', 'dd_version', 'version'];
 const TRACE_FIELDS = ['dd.trace_id', 'dd_trace_id', 'trace_id', 'traceId', 'trace-id', 'x-request-id', 'request_id', 'requestId', 'correlationId'];
 const SPAN_FIELDS = ['dd.span_id', 'dd_span_id', 'span_id', 'spanId', 'span-id'];
-const ERROR_FIELDS = ['error', 'err', 'exception', 'error_message'];
-const STACK_FIELDS = ['stack', 'stackTrace', 'stack_trace', 'error.stack_trace'];
+const ERROR_FIELDS = ['error.message', 'error', 'err', 'exception', 'error_message'];
+const STACK_FIELDS = ['error.stack', 'stack', 'stackTrace', 'stack_trace', 'error.stack_trace'];
 const CALLER_FIELDS = ['caller', 'source', 'class', 'method', 'function'];
 
 // Claves crudas (planas o rutas con puntos) de las que se lee cada campo de ParsedLog direccionable por la
@@ -151,6 +151,13 @@ function normalizeTimestamp(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? original : date.toISOString();
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Claves del objeto `error` que se hoistean a campos propios
+const ERROR_OBJECT_HOISTED = ['message', 'stack', 'stack_trace'];
+
 export function parseLogLine(line: string, podName?: string): ParsedLog {
   const trimmed = line.trim();
 
@@ -196,10 +203,21 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
   const statusLevel = fieldLevel === 'UNKNOWN' ? levelFromStatus(record) : 'UNKNOWN';
   const level = fieldLevel !== 'UNKNOWN' ? fieldLevel : statusLevel !== 'UNKNOWN' ? statusLevel : detectLevelFromText(message);
 
+  // Un `error` objeto (estándar Datadog) nunca se convierte a texto: se hoistean message/stack y el resto queda en extra
+  const errorObj = isPlainObject(record.error) ? record.error : undefined;
+
   // Extraer campos extra (todo lo que no es un campo conocido); status solo se excluye si aportó el nivel
   const extra: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     if (key === 'status' && statusLevel !== 'UNKNOWN') continue;
+    if (key === 'error' && errorObj) {
+      const rest: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(errorObj)) {
+        if (!ERROR_OBJECT_HOISTED.includes(k)) rest[k] = v;
+      }
+      if (Object.keys(rest).length > 0) extra.error = rest;
+      continue;
+    }
     if (!KNOWN_FIELDS.has(key) && value !== undefined && value !== null) {
       extra[key] = value;
     }
@@ -229,7 +247,7 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
     traceId: findField(record, TRACE_FIELDS),
     spanId: findField(record, SPAN_FIELDS),
     caller: findField(record, CALLER_FIELDS),
-    error: findField(record, ERROR_FIELDS),
+    error: findField(record, errorObj ? ERROR_FIELDS.filter((f) => f !== 'error') : ERROR_FIELDS),
     stackTrace: findField(record, STACK_FIELDS),
     podName,
     extra,

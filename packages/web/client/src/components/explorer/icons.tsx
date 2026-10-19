@@ -24,3 +24,4 @@ export const CopyIcon = (p: IconProps) => <Icon {...p} d="M8 8V6a2 2 0 012-2h8a2
 export const ArrowRightIcon = (p: IconProps) => <Icon {...p} d="M14 5l7 7m0 0l-7 7m7-7H3" />;
 export const TrashIcon = (p: IconProps) => <Icon {...p} d="M19 7l-1 12a2 2 0 01-2 2H8a2 2 0 01-2-2L5 7m5 4v6m4-6v6M9 7V4h6v3M4 7h16" />;
 export const RefreshIcon = (p: IconProps) => <Icon {...p} d="M4 4v6h6M20 20v-6h-6M5.5 15A8 8 0 0018 17.5M18.5 9A8 8 0 006 6.5" />;
+export const BookmarkIcon = (p: IconProps) => <Icon {...p} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-4-7 4V5z" />;

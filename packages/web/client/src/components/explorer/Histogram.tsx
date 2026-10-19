@@ -1,7 +1,19 @@
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import type { Histogram as HistogramData } from '../../lib/histogram';
+import { NONE_GROUP, OTHER_GROUP } from '../../lib/histogram';
 import { useElementWidth } from '../../hooks/useElementWidth';
-import { LEVEL_ORDER, formatMs, formatTick, levelConfig } from '../../utils/log-utils';
+import { formatMs, formatTick, levelConfig } from '../../utils/log-utils';
+
+const GROUP_COLORS = [
+  'text-blue-600',
+  'text-violet-600',
+  'text-emerald-600',
+  'text-amber-600',
+  'text-pink-600',
+  'text-cyan-600',
+  'text-orange-600',
+  'text-indigo-600',
+];
 
 const CHART_HEIGHT = 72;
 const AXIS_HEIGHT = 18;
@@ -20,14 +32,26 @@ interface Props {
   histogram: HistogramData;
   /** Drag-selection callback; omit to disable zooming. */
   onZoom?: (from: number, to: number) => void;
+  /** Legend chip click (non-level grouping); omit to make the legend read-only. */
+  onSelectGroup?: (value: string) => void;
 }
 
-export default function Histogram({ histogram, onZoom }: Props) {
+export default function Histogram({ histogram, onZoom, onSelectGroup }: Props) {
   const [ref, width] = useElementWidth<HTMLDivElement>();
   const [hover, setHover] = useState<{ index: number; x: number } | null>(null);
   const [drag, setDrag] = useState<{ x0: number; x1: number } | null>(null);
 
-  const { from, to, bucketMs, buckets } = histogram;
+  const { from, to, bucketMs, buckets, groups, groupBy } = histogram;
+  const groupColor = (group: string, index: number) =>
+    groupBy === 'level'
+      ? (levelConfig[group] ?? levelConfig.UNKNOWN).color
+      : group === OTHER_GROUP || group === NONE_GROUP
+        ? 'text-slate-400'
+        : GROUP_COLORS[index % GROUP_COLORS.length];
+  const groupTotals = new Map<string, number>();
+  for (const bucket of buckets) {
+    for (const [group, count] of Object.entries(bucket.counts)) groupTotals.set(group, (groupTotals.get(group) ?? 0) + count);
+  }
   const span = Math.max(1, to - from);
   const max = Math.max(1, ...buckets.map((b) => b.total));
   const toX = (ms: number) => Math.min(width, Math.max(0, ((ms - from) / span) * width));
@@ -94,20 +118,20 @@ export default function Histogram({ histogram, onZoom }: Props) {
               let y = CHART_HEIGHT;
               return (
                 <g key={bucket.start} opacity={hover && hover.index !== i ? 0.55 : 1}>
-                  {LEVEL_ORDER.map((level) => {
-                    const count = bucket.counts[level];
+                  {groups.map((group, gi) => {
+                    const count = bucket.counts[group];
                     if (!count) return null;
                     const h = (count / max) * (CHART_HEIGHT - 4);
                     y -= h;
                     return (
                       <rect
-                        key={level}
+                        key={group}
                         x={x}
                         y={y}
                         width={barWidth}
                         height={h}
                         fill="currentColor"
-                        className={(levelConfig[level] ?? levelConfig.UNKNOWN).color}
+                        className={groupColor(group, gi)}
                       />
                     );
                   })}
@@ -154,14 +178,45 @@ export default function Histogram({ histogram, onZoom }: Props) {
             <span className="text-klv-text-muted"> +{formatBucket(bucketMs)}</span>
           </p>
           <p className="text-klv-text mb-1">{hovered.total.toLocaleString()} logs</p>
-          {LEVEL_ORDER.filter((level) => hovered.counts[level] > 0)
+          {groups
+            .map((group, gi) => ({ group, gi }))
+            .filter(({ group }) => (hovered.counts[group] ?? 0) > 0)
             .reverse()
-            .map((level) => (
-              <p key={level} className={`flex justify-between gap-4 ${(levelConfig[level] ?? levelConfig.UNKNOWN).color}`}>
-                <span>{level}</span>
-                <span className="tabular-nums">{hovered.counts[level].toLocaleString()}</span>
+            .map(({ group, gi }) => (
+              <p key={group} className={`flex justify-between gap-4 ${groupColor(group, gi)}`}>
+                <span>{group}</span>
+                <span className="tabular-nums">{hovered.counts[group].toLocaleString()}</span>
               </p>
             ))}
+        </div>
+      )}
+
+      {groupBy !== 'level' && groups.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 px-1 pb-1 text-[11px] font-mono">
+          {groups.map((group, gi) => {
+            const clickable = !!onSelectGroup && group !== OTHER_GROUP && group !== NONE_GROUP;
+            const content = (
+              <>
+                <span className={groupColor(group, gi)}>■</span> {group}
+                <span className="text-klv-text-muted"> · {(groupTotals.get(group) ?? 0).toLocaleString()}</span>
+              </>
+            );
+            return clickable ? (
+              <button
+                key={group}
+                type="button"
+                title="Filter by this value"
+                className="text-klv-text-secondary hover:text-klv-text"
+                onClick={() => onSelectGroup(group)}
+              >
+                {content}
+              </button>
+            ) : (
+              <span key={group} className="text-klv-text-secondary">
+                {content}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

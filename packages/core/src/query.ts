@@ -224,25 +224,28 @@ class Lexer {
     return head.includes('\\') ? undefined : resolveFieldName(head);
   }
 
-  // Valor sin comillas: `\` escapa el siguiente carácter; `*` sin escapar es comodín
+  // Valor sin comillas: `\` escapa el siguiente carácter; `*` y `?` sin escapar son comodines
   private unescape(start: number, end: number): { value: string; wildcard: boolean } {
     const { text } = this;
     let value = '';
     let wildcard = false;
-    let literalStar = false;
+    let literalWildcard = false;
     for (let j = start; j < end; j++) {
       const char = text[j];
       if (char === '\\' && j + 1 < end) {
         j++;
-        if (text[j] === '*') literalStar = true;
+        if (text[j] === '*' || text[j] === '?') literalWildcard = true;
         value += text[j];
       } else {
-        if (char === '*') wildcard = true;
+        if (char === '*' || char === '?') wildcard = true;
         value += char;
       }
     }
-    if (wildcard && literalStar) {
-      throw new ParseError("No se puede mezclar '*' literal y comodín en un mismo valor; use comillas", start);
+    if (wildcard && literalWildcard) {
+      throw new ParseError(
+        "No se puede mezclar '*' o '?' literales con comodines en un mismo valor; use comillas",
+        start
+      );
     }
     return { value, wildcard };
   }
@@ -268,9 +271,11 @@ class Lexer {
   private parseFieldValue(field: QueryField, name: string, start: number): QueryNode {
     const { text } = this;
     const char = text[start];
-    if (char === undefined || WHITESPACE_RE.test(char) || char === '(' || char === ')') {
+    if (char === undefined || WHITESPACE_RE.test(char) || char === ')') {
       throw new ParseError(`Falta el valor del campo "${name}"`, start);
     }
+
+    if (char === '(') return this.parseValueGroup(field, name, start);
 
     if (char === '"') {
       const { value, end } = this.readQuoted(start);
@@ -327,6 +332,92 @@ class Lexer {
       return { type: 'field', field, op: 'eq', value: normalizeLevel(value, position), wildcard: false };
     }
     return { type: 'field', field, op: 'eq', value, wildcard };
+  }
+
+  private skipSpaces(): void {
+    const { text } = this;
+    while (this.index < text.length && WHITESPACE_RE.test(text[this.index])) this.index++;
+  }
+
+  // `campo:( … )`: grupo de valores con la misma precedencia que la consulta (NOT/`-` > AND implícito > OR);
+  // cada valor interno se lee con parseFieldValue y queda ligado al mismo campo
+  private parseValueGroup(field: QueryField, name: string, open: number): QueryNode {
+    this.index = open + 1;
+    this.skipSpaces();
+    if (this.text[this.index] === ')') throw new ParseError('Grupo vacío ()', open);
+    const node = this.groupOr(field, name, open);
+    this.skipSpaces();
+    if (this.text[this.index] !== ')') throw new ParseError('Paréntesis sin cerrar', open);
+    this.index++;
+    return node;
+  }
+
+  // Palabra completa en la posición actual (tras espacios), para reconocer AND/OR/NOT
+  private groupWord(): string {
+    this.skipSpaces();
+    return this.text.slice(this.index, this.wordEnd(this.index));
+  }
+
+  private groupOr(field: QueryField, name: string, open: number): QueryNode {
+    const first = this.groupAnd(field, name, open);
+    const children = [first];
+    while (this.groupWord() === 'OR') {
+      const after = { label: 'OR', pos: this.index };
+      this.index += 2;
+      children.push(this.groupAnd(field, name, open, after));
+    }
+    return children.length === 1 ? first : { type: 'or', children };
+  }
+
+  private groupAnd(field: QueryField, name: string, open: number, after?: { label: string; pos: number }): QueryNode {
+    const first = this.groupUnary(field, name, open, after);
+    const children = [first];
+    for (;;) {
+      const word = this.groupWord();
+      if (this.index >= this.text.length || this.text[this.index] === ')' || word === 'OR') break;
+      if (word === 'AND') {
+        const token = { label: 'AND', pos: this.index };
+        this.index += 3;
+        children.push(this.groupUnary(field, name, open, token));
+      } else {
+        children.push(this.groupUnary(field, name, open));
+      }
+    }
+    return children.length === 1 ? first : { type: 'and', children };
+  }
+
+  private groupUnary(
+    field: QueryField,
+    name: string,
+    open: number,
+    after?: { label: string; pos: number }
+  ): QueryNode {
+    const { text } = this;
+    const word = this.groupWord();
+    const pos = this.index;
+    const char = text[pos];
+    const missing = (): ParseError =>
+      after
+        ? new ParseError(`Falta el término después de '${after.label}'`, after.pos)
+        : new ParseError('Paréntesis sin cerrar', open);
+
+    if (char === undefined) throw missing();
+    if (char === ')') throw after ? missing() : new ParseError('Se esperaba un término', pos);
+    if (word === 'AND' || word === 'OR') {
+      throw after ? missing() : new ParseError(`Falta el término antes de '${word}'`, pos);
+    }
+    if (word === 'NOT') {
+      this.index += 3;
+      return { type: 'not', child: this.groupUnary(field, name, open, { label: 'NOT', pos }) };
+    }
+    if (char === '-') {
+      if (pos + 1 >= text.length || WHITESPACE_RE.test(text[pos + 1])) {
+        throw new ParseError("Falta el término después de '-'", pos);
+      }
+      this.index++;
+      return { type: 'not', child: this.groupUnary(field, name, open, { label: '-', pos }) };
+    }
+    return this.parseFieldValue(field, name, pos);
   }
 }
 
@@ -413,14 +504,23 @@ export function parseQuery(text: string): QueryParseResult {
 
 const globCache = new WeakMap<QueryNode, RegExp>();
 
+// Glob carácter a carácter: una racha de `*` → `.*`, `?` → `.` (un carácter), el resto literal.
+// El indicador `u` hace que `.` consuma un punto de código, igual que el `char` del evaluador Rust.
 function globRegExp(node: QueryNode, glob: string, anchored: boolean): RegExp {
   let regex = globCache.get(node);
   if (!regex) {
-    const body = glob
-      .split(/\*+/)
-      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('.*');
-    regex = new RegExp(anchored ? `^${body}$` : body, 'is');
+    let body = '';
+    let inStar = false;
+    for (const char of glob) {
+      if (char === '*') {
+        if (!inStar) body += '.*';
+        inStar = true;
+        continue;
+      }
+      inStar = false;
+      body += char === '?' ? '.' : char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    regex = new RegExp(anchored ? `^${body}$` : body, 'isu');
     globCache.set(node, regex);
   }
   return regex;

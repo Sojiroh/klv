@@ -135,11 +135,11 @@ fn like_pattern(text: &str) -> String {
 }
 
 /// Texto libre: aparece en message, error o stack_trace (el corpus que evalúa `matches_query`).
-/// Con comodín basta exigir el tramo literal más largo.
+/// Con comodín (`*` o `?`) basta exigir el tramo literal más largo entre ellos.
 fn text_fragment(value: &str, wildcard: bool) -> Option<Fragment> {
     let literal = if wildcard {
         value
-            .split('*')
+            .split(|c: char| c == '*' || c == '?')
             .filter(|piece| !piece.is_empty() && printable_ascii(piece))
             .max_by_key(|piece| piece.len())?
     } else if !value.is_empty() && printable_ascii(value) {

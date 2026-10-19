@@ -207,8 +207,8 @@ function fieldFragment(node: Extract<QueryNode, { type: 'field' }>): Fragment | 
 
 function textFragment(node: Extract<QueryNode, { type: 'text' }>): Fragment | null {
   if (!node.wildcard) return likeFragment(node.value);
-  // Glob: cada tramo literal debe aparecer; se usa el más largo
-  const longest = node.value.split('*').reduce((best, part) => (part.length > best.length ? part : best), '');
+  // Glob (`*` y `?`): cada tramo literal debe aparecer; se usa el más largo
+  const longest = node.value.split(/[*?]/).reduce((best, part) => (part.length > best.length ? part : best), '');
   return likeFragment(longest);
 }
 

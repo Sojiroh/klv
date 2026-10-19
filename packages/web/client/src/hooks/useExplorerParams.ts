@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TIME_RANGES, type TimeRangeState } from '../lib/time';
-import { DEFAULT_COLUMNS, parseColumns, serializeColumns, type ColumnId } from '../lib/columns';
+import { DEFAULT_COLUMNS, isColumnId, parseColumns, serializeColumns, type ColumnId } from '../lib/columns';
 import { usePersistentState } from './usePersistentState';
 
 export const TAIL_OPTIONS = [100, 500, 1000, 5000, 10000];
@@ -24,12 +24,14 @@ export interface ExplorerParams {
   setPattern: (id: string | null) => void;
   columns: ColumnId[];
   setColumns: (columns: ColumnId[]) => void;
+  groupBy: ColumnId;
+  setGroupBy: (id: ColumnId) => void;
   searchParams: URLSearchParams;
   /** Sets (string) or removes (null / empty) URL parameters in one history-replacing navigation. */
   update: (patch: Record<string, string | null>) => void;
 }
 
-/** Shareable explorer state kept in the URL: q, range, from, to, tail, previous, view, pattern, cols. */
+/** Shareable explorer state kept in the URL: q, range, from, to, tail, previous, view, pattern, cols, by. */
 export function useExplorerParams(defaultRange: string): ExplorerParams {
   const [searchParams, setSearchParams] = useSearchParams();
   const latest = useRef(searchParams);
@@ -54,6 +56,8 @@ export function useExplorerParams(defaultRange: string): ExplorerParams {
   const toParam = searchParams.get('to');
   const tailParam = searchParams.get('tail');
   const colsParam = searchParams.get('cols');
+  const byParam = searchParams.get('by');
+  const groupBy: ColumnId = byParam && isColumnId(byParam) && byParam !== 'time' && byParam !== 'message' ? byParam : 'level';
 
   const range = useMemo<TimeRangeState>(() => {
     if (rangeParam === 'custom') {
@@ -95,6 +99,7 @@ export function useExplorerParams(defaultRange: string): ExplorerParams {
   const setPrevious = useCallback((next: boolean) => update({ previous: next ? 'true' : null }), [update]);
   const setView = useCallback((next: ExplorerView) => update({ view: next === 'patterns' ? 'patterns' : null }), [update]);
   const setPattern = useCallback((id: string | null) => update({ pattern: id }), [update]);
+  const setGroupBy = useCallback((id: ColumnId) => update({ by: id === 'level' ? null : id }), [update]);
   const setColumns = useCallback(
     (next: ColumnId[]) => {
       setStoredColumns(next);
@@ -118,6 +123,8 @@ export function useExplorerParams(defaultRange: string): ExplorerParams {
     setPattern,
     columns,
     setColumns,
+    groupBy,
+    setGroupBy,
     searchParams,
     update,
   };

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { type ParsedLog } from '../types';
 import type { ColumnId } from '../lib/columns';
 import { fieldClause } from '../lib/query';
+import { highlight } from '../lib/highlight';
 import { formatTimestamp, levelConfig } from '../utils/log-utils';
 import RawJsonView from './RawJsonView';
 import { flattenExtra } from './explorer/clauses';
@@ -28,6 +29,8 @@ interface Props {
   suspendKeys?: boolean;
   /** Opened from the context view: rendered above that dialog instead of above the page. */
   stacked?: boolean;
+  /** Free-text terms to mark in message, error and stack trace. */
+  highlight?: RegExp | null;
 }
 
 const iconButton =
@@ -43,6 +46,7 @@ export default function LogDetailPanel({
   onViewContext,
   suspendKeys = false,
   stacked = false,
+  highlight: pattern = null,
 }: Props) {
   const [copied, setCopied] = useState<'ok' | 'failed' | null>(null);
 
@@ -122,11 +126,17 @@ export default function LogDetailPanel({
     );
   };
 
-  const row = (label: string, actions: FieldActions, color = 'text-klv-text-secondary', labelColor = 'text-klv-text-muted') =>
+  const row = (
+    label: string,
+    actions: FieldActions,
+    color = 'text-klv-text-secondary',
+    labelColor = 'text-klv-text-muted',
+    display?: ReactNode,
+  ) =>
     actions.value ? (
       <div key={label} className="group flex items-start gap-3 py-1.5 border-b border-klv-border-subtle last:border-0">
         <span className={`${labelColor} shrink-0 w-24 text-right truncate`} title={label}>{label}</span>
-        <span className={`${color} break-all min-w-0`}>{actions.value}</span>
+        <span className={`${color} break-all min-w-0`}>{display ?? actions.value}</span>
         {renderActions(actions)}
       </div>
     ) : null;
@@ -186,7 +196,7 @@ export default function LogDetailPanel({
               <h3 className="klv-section-label mb-2">Fields</h3>
               <div className="klv-card p-3 font-mono text-xs">
                 {row('level', { field: 'level', value: log.level, column: 'level' }, cfg.color)}
-                {row('message', { value: log.message })}
+                {row('message', { value: log.message }, undefined, undefined, highlight(log.message, pattern))}
                 {row('service', { field: 'service', value: log.service ?? '', column: 'service' }, 'text-sky-700')}
                 {row('env', { field: 'env', value: log.env ?? '', column: 'env' })}
                 {row('version', { field: 'version', value: log.version ?? '', column: 'version' })}
@@ -197,7 +207,7 @@ export default function LogDetailPanel({
                 {row('traceId', { field: 'trace', value: log.traceId ?? '', column: 'trace', trace: 'trace' })}
                 {row('spanId', { field: 'span', value: log.spanId ?? '', trace: 'span' })}
                 {row('caller', { field: 'caller', value: log.caller ?? '', column: 'caller' })}
-                {row('error', { field: 'error', value: log.error ?? '' }, 'text-red-600')}
+                {row('error', { field: 'error', value: log.error ?? '' }, 'text-red-600', undefined, highlight(log.error ?? '', pattern))}
               </div>
             </section>
 
@@ -231,7 +241,7 @@ export default function LogDetailPanel({
                 <h3 className="klv-section-label mb-2">Stack Trace</h3>
                 <pre className="text-xs text-red-700 font-mono bg-red-50 border border-red-200
                                 rounded-lg p-4 overflow-auto whitespace-pre-wrap">
-                  {log.stackTrace}
+                  {highlight(log.stackTrace, pattern)}
                 </pre>
               </section>
             )}

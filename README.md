@@ -68,7 +68,10 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 
 - **Query language** estilo Datadog, compartible via URL (`?q=...&range=1h&cols=...`)
 - **Facetas** con conteos por level, pod, container, service, env, version y atributos JSON; click para incluir, alt-click para excluir
-- **Histograma** de volumen por nivel con selector de rango (15m, 1h, 4h, 24h, 7d, 30d o custom) y zoom arrastrando
+- **Autocompletado** en la barra de busqueda: campos, atributos y valores tomados de las facetas
+- **Resaltado** de los terminos buscados en mensaje, error y stack
+- **Histograma** de volumen agrupable por nivel, campo o atributo `@campo` (`by=` en la URL; click en la leyenda para filtrar por ese valor), con selector de rango (15m, 1h, 4h, 24h, 7d, 30d o custom) y zoom arrastrando
+- **Vistas guardadas** y **consultas recientes**, almacenadas en el navegador/app
 - **Columnas configurables** (incluye atributos `@campo`) y **export** a CSV/JSON
 - **Patrones**: agrupa mensajes similares (numeros, IDs, UUIDs, IPs, timestamps normalizados) con conteo por nivel
 - **Vista raw interactiva** en el panel de detalle: click en una clave o valor del JSON para filtrar por el valor (`@http.method:POST`), por existencia del campo (`@http.method:*`), excluir, añadir como columna o copiar. Las claves que el parser extrae a campos propios usan ese campo (`dd.trace_id` → `trace:`, `msg` → `message:`, `status` → `level:`); solo se ofrecen filtros que el propio log cumple
@@ -80,9 +83,10 @@ Sintaxis del query:
 | Ejemplo | Significado |
 |---------|-------------|
 | `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en `message`, `error` y `stack` (como Datadog); para otros campos usa `campo:valor` y para atributos `@campo:valor` |
-| `time*out` | Comodin |
+| `time*out`, `te?t` | Comodines: `*` cualquier texto, `?` un caracter |
 | `level:error`, `level:>=warn` | Nivel exacto o minimo (alias `status:`) |
 | `service:api-*`, `env:prod`, `version:1.2.3`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe). Los tags de Datadog `@dd.trace_id:`/`dd.trace_id:`, `dd.span_id:`, `dd.service:`, `dd.env:` y `dd.version:` son alias de los campos reservados |
+| `service:(web OR api)` | Varios valores de un campo (admite `OR`, `AND` y `NOT` dentro de los parentesis) |
 | `@http.status:500`, `@user.id:*`, `@duration:>500`, `@http.status:[500 TO 599]` | Atributos JSON (ruta con puntos), comparaciones y rangos numericos |
 | `-healthcheck`, `NOT service:api`, `(a OR b) AND c` | Negacion, `AND` implicito, `OR` y parentesis |
 
@@ -271,10 +275,12 @@ Reconoce automaticamente campos comunes de logs JSON:
 - **Version**: `dd.version`, `dd_version`, `version`
 - **Trace**: `dd.trace_id` (plano o anidado en `dd`), `dd_trace_id`, `trace_id`, `traceId`, `x-request-id`, `requestId`
 - **Span**: `dd.span_id`, `span_id`, `spanId`
-- **Error**: `error`, `err`, `exception`
-- **Stack**: `stack`, `stackTrace`, `stack_trace`, `error.stack_trace`
+- **Error**: `error.message`, `error`, `err`, `exception`, `error_message`; si `error` es un objeto estilo Datadog, `message` se usa como error
+- **Stack**: `error.stack`, `stack`, `stackTrace`, `stack_trace`, `error.stack_trace`
 
 Los tags que inyecta el tracer de Datadog (`dd.trace_id`, `dd.span_id`, `dd.service`, `dd.env`, `dd.version`) se mapean a estos campos y se eliminan de los atributos extra.
+
+Cuando `error` es un objeto (`error.message`, `error.stack`, `error.kind` estilo Datadog), `message` y `stack` se extraen y el resto del objeto queda como atributos `@error.*` (p. ej. `@error.kind`).
 
 En lineas de texto plano el nivel se detecta por `level=...` (logfmt), por la primera palabra de nivel en mayusculas (`INFO`, `WARN`, `ERROR`...) o por palabras como `error`/`exception`.
 

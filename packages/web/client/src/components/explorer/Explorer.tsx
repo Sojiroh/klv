@@ -4,6 +4,7 @@ import { usePersistentState } from '../../hooks/usePersistentState';
 import type { ExplorerParams } from '../../hooks/useExplorerParams';
 import { computeFacets } from '../../lib/facets';
 import { buildHistogram } from '../../lib/histogram';
+import { highlightPattern as highlightPatternOf } from '../../lib/highlight';
 import { computePatterns, messageSignature } from '../../lib/patterns';
 import { fieldClause, parseQuery, toggleClause } from '../../lib/query';
 import { resolveRange } from '../../lib/time';
@@ -20,11 +21,13 @@ import PatternsTable from './PatternsTable';
 import QueryBar from './QueryBar';
 import TimeRangePicker from './TimeRangePicker';
 import ToolbarToggle from './ToolbarToggle';
+import SavedViews from './SavedViews';
 import { withColumn, withoutColumn } from './clauses';
 import { FilterIcon, XIcon } from './icons';
 import { filterPattern, filterQuery, filterWindow, timeSpan } from './pipeline';
 
 const TABLE_HEIGHT = 'max(320px, calc(100vh - 440px))';
+const GROUP_BY_FIELDS: ColumnId[] = ['level', 'service', 'env', 'version', 'pod', 'container', 'namespace'];
 
 interface Props {
   params: ExplorerParams;
@@ -64,7 +67,7 @@ export default function Explorer({
   maxHeight = TABLE_HEIGHT,
 }: Props) {
   const navigate = useNavigate();
-  const { query, setQuery, range, setRange, view, pattern, columns, setColumns, setPattern } = params;
+  const { query, setQuery, range, setRange, view, pattern, columns, setColumns, setPattern, groupBy, setGroupBy } = params;
   const [selected, setSelected] = useState<ParsedLog | null>(null);
   const [contextLog, setContextLog] = useState<ParsedLog | null>(null);
   // Details of a line picked inside the context dialog (a second panel stacked above it)
@@ -77,6 +80,7 @@ export default function Explorer({
 
   const parsed = useMemo(() => parseQuery(query), [query]);
   const ast = parsed.ok ? parsed.ast : null;
+  const highlightPattern = useMemo(() => highlightPatternOf(ast), [ast]);
 
   const timeWindow = useMemo(() => (showRange ? resolveRange(range, loadedAt) : null), [showRange, range, loadedAt]);
   const windowed = useMemo(
@@ -96,13 +100,20 @@ export default function Explorer({
   const histogram = useMemo(() => {
     const span = timeWindow ?? timeSpan(analysedShown);
     const bounds = span ? { from: span.from, to: Math.max(span.to, span.from + 1000) } : { from: 0, to: 1000 };
-    return buildHistogram(analysedShown, bounds);
-  }, [timeWindow, analysedShown]);
+    return buildHistogram(analysedShown, { ...bounds, groupBy });
+  }, [timeWindow, analysedShown, groupBy]);
 
   const applyClause = useCallback(
     (clause: string, mode: 'include' | 'exclude') => setQuery(toggleClause(query, clause, mode)),
     [query, setQuery],
   );
+
+  const groupByOptions = useMemo(() => {
+    const options: ColumnId[] = [...GROUP_BY_FIELDS];
+    for (const f of facets) if (f.field.startsWith('@')) options.push(f.field as ColumnId);
+    if (!options.includes(groupBy)) options.push(groupBy);
+    return options;
+  }, [facets, groupBy]);
 
   const toggleColumn = (id: ColumnId) => setColumns(columns.includes(id) ? withoutColumn(columns, id) : withColumn(columns, id));
 
@@ -171,8 +182,9 @@ export default function Explorer({
       <div className="space-y-3">
         {/* Query + range */}
         <div className="flex flex-wrap items-start gap-3">
-          <QueryBar value={query} onApply={setQuery} />
+          <QueryBar value={query} onApply={setQuery} facets={facets} />
           {showRange && <TimeRangePicker value={range} now={loadedAt} onChange={setRange} />}
+          <SavedViews params={params} />
         </div>
 
         {/* Toolbar */}
@@ -228,7 +240,28 @@ export default function Explorer({
 
         {/* Histogram */}
         <div className="klv-card px-3 pt-2 pb-1">
-          <Histogram histogram={histogram} onZoom={showRange ? (from, to) => setRange({ range: 'custom', from, to }) : undefined} />
+          <div className="flex items-center justify-end gap-2 pb-1">
+            <label htmlFor="klv-group-by" className="klv-section-label">
+              Group by
+            </label>
+            <select
+              id="klv-group-by"
+              className="klv-select !py-0.5 !text-[11px] font-mono"
+              value={groupBy}
+              onChange={(e) => setGroupBy(e.target.value as ColumnId)}
+            >
+              {groupByOptions.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Histogram
+            histogram={histogram}
+            onZoom={showRange ? (from, to) => setRange({ range: 'custom', from, to }) : undefined}
+            onSelectGroup={(v) => applyClause(fieldClause(groupBy, v), 'include')}
+          />
         </div>
 
         {notices}
@@ -260,6 +293,7 @@ export default function Explorer({
                 onSelect={select}
                 onRemoveColumn={(id) => setColumns(withoutColumn(columns, id))}
                 empty={emptyNode}
+                highlight={highlightPattern}
               />
             )}
           </section>
@@ -275,6 +309,7 @@ export default function Explorer({
         onToggleColumn={toggleColumn}
         onOpenTrace={(kind, id) => openTrace(kind, id, selected)}
         onViewContext={viewContext}
+        highlight={highlightPattern}
       />
 
       {contextLog && (
@@ -300,6 +335,7 @@ export default function Explorer({
             onToggleColumn={toggleColumn}
             onOpenTrace={(kind, id) => openTrace(kind, id, contextSelected)}
             onViewContext={viewContext}
+            highlight={highlightPattern}
           />
         </>
       )}

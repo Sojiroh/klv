@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { columnLabel, columnValue, type ColumnId } from '../../lib/columns';
+import { highlight } from '../../lib/highlight';
 import type { ParsedLog } from '../../types';
 import { formatMs, levelConfig, prettyRaw } from '../../utils/log-utils';
 import { cachedTime } from './pipeline';
@@ -50,9 +51,11 @@ interface Props {
   scrollToIndex?: number | null;
   onRemoveColumn?: (id: ColumnId) => void;
   empty?: ReactNode;
+  /** Free-text terms to mark in the message cell. */
+  highlight?: RegExp | null;
 }
 
-function Cell({ log, id, showDate }: { log: ParsedLog; id: ColumnId; showDate: boolean }) {
+function Cell({ log, id, showDate, pattern }: { log: ParsedLog; id: ColumnId; showDate: boolean; pattern: RegExp | null }) {
   if (id === 'time') {
     return <span className="text-klv-text-muted tabular-nums truncate">{formatMs(cachedTime(log), showDate)}</span>;
   }
@@ -71,7 +74,7 @@ function Cell({ log, id, showDate }: { log: ParsedLog; id: ColumnId; showDate: b
       <span
         className={`truncate transition-colors ${isError ? 'text-red-600' : 'text-klv-text-secondary group-hover:text-klv-text'}`}
       >
-        {log.message}
+        {highlight(log.message, pattern)}
       </span>
     );
   }
@@ -94,6 +97,7 @@ export default function LogTable({
   scrollToIndex = null,
   onRemoveColumn,
   empty = null,
+  highlight: pattern = null,
 }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
   const keys = useRef(new WeakMap<ParsedLog, number>());
@@ -278,7 +282,7 @@ export default function LogTable({
                       }}
                     >
                       {columns.map((id) => (
-                        <Cell key={id} log={log} id={id} showDate={showDate} />
+                        <Cell key={id} log={log} id={id} showDate={showDate} pattern={pattern} />
                       ))}
                     </div>
                   )}
