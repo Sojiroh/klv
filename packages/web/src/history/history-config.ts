@@ -6,7 +6,7 @@ import { join } from 'path';
 import { assertK8sName } from '@klv/core';
 import type { LogLevel } from '@klv/core';
 import type { CollectorTarget, HistoryConfig, RetentionSettings } from './history.types';
-import { isRecord } from './type-guards';
+import { isRecord } from '../type-guards';
 
 export const DEFAULT_RETENTION: RetentionSettings = { maxAgeDays: 7, maxSizeMb: 1024 };
 

@@ -17,34 +17,52 @@ export interface PodInfo {
   restarts: Record<string, number>;
 }
 
-export interface DeploymentCondition {
+export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet';
+
+export interface WorkloadCondition {
   type: string;
   status: string;
   reason?: string;
   message?: string;
 }
 
-export interface DeploymentInfo {
+export interface WorkloadInfo {
+  kind: WorkloadKind;
   name: string;
   namespace: string;
-  // Réplicas deseadas (spec.replicas) y conteos del status
+  // Pods deseados y conteos del status (DaemonSet: pods programados en los nodos)
   desired: number;
   current: number;
   ready: number;
   updated: number;
   available: number;
+  // Deployment: RollingUpdate | Recreate; StatefulSet y DaemonSet: RollingUpdate | OnDelete
+  strategy: string;
+  // StatefulSet: los pods con ordinal menor que la partición no se actualizan (0 en los demás tipos)
+  partition: number;
+  // Solo los deployments se pausan
+  paused: boolean;
   // observedGeneration < generation: el controller todavía no procesó el último cambio del spec
   generation: number;
   observedGeneration: number;
-  paused: boolean;
-  conditions: DeploymentCondition[];
+  conditions: WorkloadCondition[];
   // Fecha (RFC 3339) del último reinicio hecho con klv, kubectl o Lens
   restartedAt?: string;
   age: string;
 }
 
+type AppsWorkload = k8s.V1Deployment | k8s.V1StatefulSet | k8s.V1DaemonSet;
+
 // Misma anotación que `kubectl rollout restart` y Lens
 const RESTARTED_AT_ANNOTATION = 'kubectl.kubernetes.io/restartedAt';
+
+// spec.replicas es int32
+const MAX_REPLICAS = 2 ** 31 - 1;
+
+// Para mensajes y validación de nombres: "deployment", "statefulset", "daemonset"
+function workloadLabel(kind: WorkloadKind): 'deployment' | 'statefulset' | 'daemonset' {
+  return kind === 'Deployment' ? 'deployment' : kind === 'StatefulSet' ? 'statefulset' : 'daemonset';
+}
 
 export interface LogOptions {
   namespace: string;
@@ -329,40 +347,81 @@ export class KubeClient {
     }
   }
 
-  async getDeployments(namespace: string): Promise<DeploymentInfo[]> {
+  async getWorkloads(kind: WorkloadKind, namespace: string): Promise<WorkloadInfo[]> {
     assertK8sName('namespace', namespace);
     try {
-      const res = await this.appsApi.listNamespacedDeployment({ namespace });
-      return (res.items ?? []).map((d) => this.toDeploymentInfo(d, namespace));
+      const items = await this.listWorkloads(kind, namespace);
+      return items.map((workload) => this.toWorkloadInfo(kind, workload, namespace));
     } catch (err) {
-      throw toKubeError(err, `Error al obtener deployments del namespace "${namespace}"`);
+      throw toKubeError(err, `Error al obtener ${workloadLabel(kind)}s del namespace "${namespace}"`);
     }
   }
 
-  // Como `kubectl rollout restart`: cambia una anotación del template y el controller reemplaza los pods
-  // con la estrategia del deployment. Igual que kubectl, rechaza los deployments pausados.
-  async restartDeployment(namespace: string, name: string): Promise<DeploymentInfo> {
+  // Como `kubectl rollout restart`: cambia una anotación del template y el controller reemplaza los pods con
+  // su estrategia (con OnDelete, solo cuando se borran). Igual que kubectl, rechaza los deployments pausados.
+  async restartWorkload(kind: WorkloadKind, namespace: string, name: string): Promise<WorkloadInfo> {
     assertK8sName('namespace', namespace);
-    assertK8sName('deployment', name);
-    const action = `Error al reiniciar el deployment "${name}"`;
+    assertK8sName(workloadLabel(kind), name);
+    const action = `Error al reiniciar el ${workloadLabel(kind)} "${name}"`;
     try {
-      const deployment = await this.appsApi.readNamespacedDeployment({ name, namespace });
-      if (deployment.spec?.paused) {
-        throw new KubeError(`${action}: está pausado, reanude el rollout primero`, 409);
+      if (kind === 'Deployment') {
+        const deployment = await this.appsApi.readNamespacedDeployment({ name, namespace });
+        if (deployment.spec?.paused) {
+          throw new KubeError(`${action}: está pausado, reanude el rollout primero`, 409);
+        }
       }
       const restartedAt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-      const patched = await this.appsApi.patchNamespacedDeployment(
-        {
-          name,
-          namespace,
-          fieldManager: 'klv',
-          body: { spec: { template: { metadata: { annotations: { [RESTARTED_AT_ANNOTATION]: restartedAt } } } } },
-        },
-        k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.StrategicMergePatch),
-      );
-      return this.toDeploymentInfo(patched, namespace);
+      const request = {
+        name,
+        namespace,
+        fieldManager: 'klv',
+        body: { spec: { template: { metadata: { annotations: { [RESTARTED_AT_ANNOTATION]: restartedAt } } } } },
+      };
+      const options = k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.StrategicMergePatch);
+      const patched = kind === 'Deployment'
+        ? await this.appsApi.patchNamespacedDeployment(request, options)
+        : kind === 'StatefulSet'
+          ? await this.appsApi.patchNamespacedStatefulSet(request, options)
+          : await this.appsApi.patchNamespacedDaemonSet(request, options);
+      return this.toWorkloadInfo(kind, patched, namespace);
     } catch (err) {
       throw toKubeError(err, action);
+    }
+  }
+
+  // Como `kubectl scale`: merge patch de spec.replicas en el subrecurso scale. Los daemonsets no se escalan.
+  async scaleWorkload(kind: WorkloadKind, namespace: string, name: string, replicas: number): Promise<WorkloadInfo> {
+    assertK8sName('namespace', namespace);
+    assertK8sName(workloadLabel(kind), name);
+    if (kind === 'DaemonSet') {
+      throw new KubeError('Los daemonsets no se escalan: ejecutan un pod por nodo', 400);
+    }
+    if (!Number.isInteger(replicas) || replicas < 0 || replicas > MAX_REPLICAS) {
+      throw new KubeError(`Número de réplicas inválido: ${replicas}`, 400);
+    }
+    const action = `Error al escalar el ${workloadLabel(kind)} "${name}"`;
+    try {
+      const request = { name, namespace, fieldManager: 'klv', body: { spec: { replicas } } };
+      const options = k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.MergePatch);
+      if (kind === 'Deployment') {
+        await this.appsApi.patchNamespacedDeploymentScale(request, options);
+      } else {
+        await this.appsApi.patchNamespacedStatefulSetScale(request, options);
+      }
+      return this.toWorkloadInfo(kind, await this.readWorkload(kind, namespace, name), namespace);
+    } catch (err) {
+      throw toKubeError(err, action);
+    }
+  }
+
+  // Como `kubectl delete pod`: respeta el período de gracia del pod; su controller (si tiene) crea otro
+  async deletePod(namespace: string, name: string): Promise<void> {
+    assertK8sName('namespace', namespace);
+    assertK8sName('pod', name);
+    try {
+      await this.coreApi.deleteNamespacedPod({ name, namespace });
+    } catch (err) {
+      throw toKubeError(err, `Error al borrar el pod "${name}"`);
     }
   }
 
@@ -565,7 +624,8 @@ export class KubeClient {
     return {
       name: pod.metadata?.name ?? '',
       namespace: pod.metadata?.namespace ?? namespace,
-      status: pod.status?.phase ?? 'Unknown',
+      // Igual que kubectl: un pod con deletionTimestamp está terminando, aunque su fase siga siendo Running
+      status: pod.metadata?.deletionTimestamp ? 'Terminating' : (pod.status?.phase ?? 'Unknown'),
       containers: (pod.spec?.containers ?? []).map((c) => c.name),
       labels: pod.metadata?.labels ?? {},
       age: this.getAge(pod.metadata?.creationTimestamp),
@@ -573,28 +633,89 @@ export class KubeClient {
     };
   }
 
-  private toDeploymentInfo(deployment: k8s.V1Deployment, namespace: string): DeploymentInfo {
-    const { metadata, spec, status } = deployment;
+  private async listWorkloads(kind: WorkloadKind, namespace: string): Promise<AppsWorkload[]> {
+    switch (kind) {
+      case 'Deployment':
+        return (await this.appsApi.listNamespacedDeployment({ namespace })).items ?? [];
+      case 'StatefulSet':
+        return (await this.appsApi.listNamespacedStatefulSet({ namespace })).items ?? [];
+      case 'DaemonSet':
+        return (await this.appsApi.listNamespacedDaemonSet({ namespace })).items ?? [];
+    }
+  }
+
+  private readWorkload(kind: WorkloadKind, namespace: string, name: string): Promise<AppsWorkload> {
+    switch (kind) {
+      case 'Deployment':
+        return this.appsApi.readNamespacedDeployment({ name, namespace });
+      case 'StatefulSet':
+        return this.appsApi.readNamespacedStatefulSet({ name, namespace });
+      case 'DaemonSet':
+        return this.appsApi.readNamespacedDaemonSet({ name, namespace });
+    }
+  }
+
+  private toWorkloadInfo(kind: WorkloadKind, workload: AppsWorkload, namespace: string): WorkloadInfo {
+    const { metadata } = workload;
+    const conditions: WorkloadCondition[] = workload.status?.conditions ?? [];
     return {
+      kind,
       name: metadata?.name ?? '',
       namespace: metadata?.namespace ?? namespace,
-      desired: spec?.replicas ?? 1,
-      current: status?.replicas ?? 0,
-      ready: status?.readyReplicas ?? 0,
-      updated: status?.updatedReplicas ?? 0,
-      available: status?.availableReplicas ?? 0,
+      ...this.workloadCounts(kind, workload),
       generation: metadata?.generation ?? 0,
-      observedGeneration: status?.observedGeneration ?? 0,
-      paused: spec?.paused ?? false,
-      conditions: (status?.conditions ?? []).map((c) => ({
-        type: c.type,
-        status: c.status,
-        reason: c.reason,
-        message: c.message,
-      })),
-      restartedAt: spec?.template?.metadata?.annotations?.[RESTARTED_AT_ANNOTATION],
+      observedGeneration: workload.status?.observedGeneration ?? 0,
+      conditions: conditions.map(({ type, status, reason, message }) => ({ type, status, reason, message })),
+      restartedAt: workload.spec?.template?.metadata?.annotations?.[RESTARTED_AT_ANNOTATION],
       age: this.getAge(metadata?.creationTimestamp),
     };
+  }
+
+  private workloadCounts(
+    kind: WorkloadKind,
+    workload: AppsWorkload,
+  ): Pick<WorkloadInfo, 'desired' | 'current' | 'ready' | 'updated' | 'available' | 'strategy' | 'partition' | 'paused'> {
+    switch (kind) {
+      case 'Deployment': {
+        const { spec, status } = workload as k8s.V1Deployment;
+        return {
+          desired: spec?.replicas ?? 1,
+          current: status?.replicas ?? 0,
+          ready: status?.readyReplicas ?? 0,
+          updated: status?.updatedReplicas ?? 0,
+          available: status?.availableReplicas ?? 0,
+          strategy: spec?.strategy?.type ?? 'RollingUpdate',
+          partition: 0,
+          paused: spec?.paused ?? false,
+        };
+      }
+      case 'StatefulSet': {
+        const { spec, status } = workload as k8s.V1StatefulSet;
+        return {
+          desired: spec?.replicas ?? 1,
+          current: status?.replicas ?? 0,
+          ready: status?.readyReplicas ?? 0,
+          updated: status?.updatedReplicas ?? 0,
+          available: status?.availableReplicas ?? 0,
+          strategy: spec?.updateStrategy?.type ?? 'RollingUpdate',
+          partition: spec?.updateStrategy?.rollingUpdate?.partition ?? 0,
+          paused: false,
+        };
+      }
+      case 'DaemonSet': {
+        const { spec, status } = workload as k8s.V1DaemonSet;
+        return {
+          desired: status?.desiredNumberScheduled ?? 0,
+          current: status?.currentNumberScheduled ?? 0,
+          ready: status?.numberReady ?? 0,
+          updated: status?.updatedNumberScheduled ?? 0,
+          available: status?.numberAvailable ?? 0,
+          strategy: spec?.updateStrategy?.type ?? 'RollingUpdate',
+          partition: 0,
+          paused: false,
+        };
+      }
+    }
   }
 
   private getAge(timestamp?: Date): string {

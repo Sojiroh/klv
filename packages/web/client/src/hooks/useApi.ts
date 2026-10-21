@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiRequest } from '../lib/api';
 
 interface ApiResult<T> {
@@ -9,6 +9,7 @@ interface ApiResult<T> {
 
 export function useApi<T>(url: string | null) {
   const [result, setResult] = useState<ApiResult<T> | null>(null);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     if (!url) return;
@@ -20,11 +21,19 @@ export function useApi<T>(url: string | null) {
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        setResult({ url, data: null, error: err instanceof Error ? err.message : String(err) });
+        // A failed reload keeps the last data of the same URL on screen
+        setResult((prev) => ({
+          url,
+          data: prev?.url === url ? prev.data : null,
+          error: err instanceof Error ? err.message : String(err),
+        }));
       });
 
     return () => controller.abort();
-  }, [url]);
+  }, [url, version]);
+
+  // Refetches the same URL; the current data stays until the new response arrives
+  const reload = useCallback(() => setVersion((v) => v + 1), []);
 
   const current = result !== null && result.url === url ? result : null;
 
@@ -32,5 +41,6 @@ export function useApi<T>(url: string | null) {
     data: current?.data ?? null,
     loading: url !== null && current === null,
     error: current?.error ?? null,
+    reload,
   };
 }

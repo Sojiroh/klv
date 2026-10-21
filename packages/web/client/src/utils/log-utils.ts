@@ -19,13 +19,14 @@ export const statusStyles: Record<string, { dot: string; text: string }> = {
   Pending: { dot: 'bg-amber-500', text: 'text-amber-600' },
   Succeeded: { dot: 'bg-blue-500', text: 'text-blue-600' },
   Failed: { dot: 'bg-red-500', text: 'text-red-600' },
+  Terminating: { dot: 'bg-slate-400 animate-pulse-dot', text: 'text-slate-500' },
   Unknown: { dot: 'bg-slate-400', text: 'text-slate-500' },
 };
 
 export const rolloutStyles: Record<RolloutPhase, { dot: string; text: string; label: string }> = {
   ready: { dot: 'bg-emerald-500', text: 'text-emerald-600', label: 'Ready' },
   progressing: { dot: 'bg-blue-500 animate-pulse-dot', text: 'text-blue-600', label: 'Rolling out' },
-  unavailable: { dot: 'bg-amber-500', text: 'text-amber-600', label: 'Unavailable' },
+  notReady: { dot: 'bg-amber-500', text: 'text-amber-600', label: 'Not ready' },
   failed: { dot: 'bg-red-500', text: 'text-red-600', label: 'Failed' },
   paused: { dot: 'bg-slate-400', text: 'text-slate-500', label: 'Paused' },
 };

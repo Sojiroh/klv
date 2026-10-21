@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, ListParams};
+use kube::api::{Api, DeleteParams, ListParams};
 use kube::config::Kubeconfig;
+use kube::Client;
 use serde::Serialize;
 use tauri::{command, State};
 
@@ -54,9 +55,14 @@ pub async fn get_pods(
             PodInfo {
                 name: meta.name.unwrap_or_default(),
                 namespace: meta.namespace.unwrap_or_else(|| namespace.clone()),
-                status: status
-                    .and_then(|s| s.phase.clone())
-                    .unwrap_or_else(|| "Unknown".into()),
+                // Igual que kubectl: un pod con deletionTimestamp está terminando, aunque su fase siga siendo Running
+                status: if meta.deletion_timestamp.is_some() {
+                    "Terminating".into()
+                } else {
+                    status
+                        .and_then(|s| s.phase.clone())
+                        .unwrap_or_else(|| "Unknown".into())
+                },
                 containers: spec
                     .map(|s| s.containers.iter().map(|c| c.name.clone()).collect())
                     .unwrap_or_default(),
@@ -76,6 +82,31 @@ pub async fn get_pods(
         .collect();
 
     Ok(pods)
+}
+
+/// Como `kubectl delete pod`: respeta el período de gracia del pod; su controller (si tiene) crea otro.
+pub async fn delete(client: Client, namespace: &str, name: &str) -> Result<(), KlvError> {
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    api.delete(name, &DeleteParams::default())
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            KlvError::new(format!(
+                "Error al borrar el pod \"{name}\": {}",
+                kube_error_message(&e)
+            ))
+        })
+}
+
+#[command]
+pub async fn delete_pod(
+    state: State<'_, Arc<AppState>>,
+    namespace: String,
+    name: String,
+) -> Result<(), KlvError> {
+    validate_name(NameKind::Namespace, &namespace)?;
+    validate_name(NameKind::Pod, &name)?;
+    delete(state.get_client().await?, &namespace, &name).await
 }
 
 /// Nombres distintos (orden ascendente) de los contenedores de los pods del namespace.

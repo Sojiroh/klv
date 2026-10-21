@@ -6,6 +6,8 @@ pub enum NameKind {
     Pod,
     Container,
     Deployment,
+    StatefulSet,
+    DaemonSet,
 }
 
 impl NameKind {
@@ -15,10 +17,12 @@ impl NameKind {
             NameKind::Pod => "pod",
             NameKind::Container => "container",
             NameKind::Deployment => "deployment",
+            NameKind::StatefulSet => "statefulset",
+            NameKind::DaemonSet => "daemonset",
         }
     }
 
-    // namespace y container: label RFC 1123 (<= 63); pod y deployment: subdominio RFC 1123 (<= 253)
+    // namespace y container: label RFC 1123 (<= 63); pod y workloads: subdominio RFC 1123 (<= 253)
     fn is_label(self) -> bool {
         matches!(self, NameKind::Namespace | NameKind::Container)
     }

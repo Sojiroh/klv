@@ -1,8 +1,9 @@
 export { KubeClient, MAX_LOG_READ_CHARS } from './kube-client.js';
 export type {
   PodInfo,
-  DeploymentInfo,
-  DeploymentCondition,
+  WorkloadKind,
+  WorkloadInfo,
+  WorkloadCondition,
   LogOptions,
   LogRead,
   StreamHandlers,

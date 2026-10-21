@@ -1,8 +1,8 @@
 import { KubeError } from './errors.js';
 
-export type K8sNameKind = 'namespace' | 'pod' | 'container' | 'deployment';
+export type K8sNameKind = 'namespace' | 'pod' | 'container' | 'deployment' | 'statefulset' | 'daemonset';
 
-// RFC 1123 label (namespace, container) y subdominio (pod, deployment)
+// RFC 1123 label (namespace, container) y subdominio (pod y workloads)
 const LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 const SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 

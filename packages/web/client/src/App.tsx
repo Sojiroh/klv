@@ -1,7 +1,7 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import ErrorBoundary from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
-import Deployments from './pages/Deployments';
+import Workloads from './pages/Workloads';
 import Logs from './pages/Logs';
 import Stream from './pages/Stream';
 import Search from './pages/Search';
@@ -9,7 +9,7 @@ import History from './pages/History';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: '⬡' },
-  { path: '/deployments', label: 'Deployments', icon: '⎈' },
+  { path: '/workloads', label: 'Workloads', icon: '⎈' },
   { path: '/stream', label: 'Stream', icon: '◉' },
   { path: '/search', label: 'Search', icon: '⌕' },
   { path: '/history', label: 'History', icon: '◷' },
@@ -67,7 +67,7 @@ export default function App() {
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/deployments" element={<Deployments />} />
+            <Route path="/workloads" element={<Workloads />} />
             <Route path="/logs/:namespace/container/:container" element={<Logs />} />
             <Route path="/logs/:namespace/:pod" element={<Logs />} />
             <Route path="/stream" element={<Stream />} />

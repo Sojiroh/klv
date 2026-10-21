@@ -1,7 +1,7 @@
 import { isTauri, invokeApi } from './tauri';
 
 interface RequestOptions {
-  method?: 'GET' | 'PUT' | 'POST';
+  method?: 'GET' | 'PUT' | 'POST' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -48,5 +48,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   });
   if (!res.ok) throw await responseError(res);
+  // 204 No Content (e.g. DELETE): callers use `apiRequest<void>`
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

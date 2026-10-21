@@ -5,7 +5,16 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
-import { KubeClient, parseLogLine, parseLevel, matchesFilter, type LogFilter, type LogLevel, type ParsedLog } from '@klv/core';
+import {
+  KubeClient,
+  parseLogLine,
+  parseLevel,
+  matchesFilter,
+  type LogFilter,
+  type LogLevel,
+  type ParsedLog,
+  type WorkloadKind,
+} from '@klv/core';
 import { formatLog, formatLogSeparator, formatStats, type FormatOptions } from './ui/formatter.js';
 import { select, multiSelect, confirm } from './ui/prompts.js';
 
@@ -126,6 +135,7 @@ program
       pods.forEach((pod, i) => {
         const statusColor = pod.status === 'Running' ? chalk.green
           : pod.status === 'Pending' ? chalk.yellow
+          : pod.status === 'Terminating' ? chalk.gray
           : chalk.red;
         table.push([
           chalk.gray(`${i + 1}`),
@@ -482,41 +492,151 @@ program
     }
   });
 
+// ─── WORKLOADS ───────────────────────────────────────────────────
+const WORKLOAD_KINDS: WorkloadKind[] = ['Deployment', 'StatefulSet', 'DaemonSet'];
+
+// Prefijos de `tipo/nombre` aceptados (como kubectl); sin prefijo es un deployment
+const WORKLOAD_ALIASES: Readonly<Record<string, WorkloadKind>> = {
+  deployment: 'Deployment',
+  deployments: 'Deployment',
+  deploy: 'Deployment',
+  statefulset: 'StatefulSet',
+  statefulsets: 'StatefulSet',
+  sts: 'StatefulSet',
+  daemonset: 'DaemonSet',
+  daemonsets: 'DaemonSet',
+  ds: 'DaemonSet',
+};
+
+interface WorkloadRef {
+  kind: WorkloadKind;
+  name: string;
+}
+
+function parseWorkloadRef(ref: string): WorkloadRef {
+  const slash = ref.indexOf('/');
+  if (slash === -1) return { kind: 'Deployment', name: ref };
+  const alias = ref.slice(0, slash).toLowerCase();
+  if (!Object.hasOwn(WORKLOAD_ALIASES, alias)) {
+    throw new Error(`Tipo de workload desconocido: "${alias}" (usa deployment, statefulset o daemonset)`);
+  }
+  return { kind: WORKLOAD_ALIASES[alias], name: ref.slice(slash + 1) };
+}
+
+// `deployment/web`, `statefulset/db`, `daemonset/agent`
+function formatWorkloadRef({ kind, name }: WorkloadRef): string {
+  return `${kind.toLowerCase()}/${name}`;
+}
+
+
 // ─── COMANDO: restart ────────────────────────────────────────────
 program
-  .command('restart [deployment]')
-  .description('Reiniciar un deployment (como kubectl rollout restart)')
-  .action(async (deploymentArg) => {
+  .command('restart [workload]')
+  .description('Reiniciar un workload (como kubectl rollout restart): nombre de deployment o tipo/nombre (sts/db, ds/agent)')
+  .action(async (workloadArg) => {
     const opts = program.opts();
     const spinner = ora('Conectando al cluster...').start();
 
     try {
       const client = new KubeClient(opts.kubeconfig, opts.context);
-      let name = deploymentArg;
+      let target = workloadArg ? parseWorkloadRef(workloadArg) : undefined;
 
-      // Sin nombre, elegir de la lista y confirmar (select elige solo si hay un único deployment)
-      if (!name) {
-        spinner.text = 'Obteniendo deployments...';
-        const deployments = await client.getDeployments(opts.namespace);
+      // Sin workload, elegir de la lista y confirmar (select elige solo si hay uno único)
+      if (!target) {
+        spinner.text = 'Obteniendo workloads...';
+        const results = await Promise.allSettled(
+          WORKLOAD_KINDS.map((kind) => client.getWorkloads(kind, opts.namespace)),
+        );
         spinner.stop();
 
-        if (deployments.length === 0) {
-          console.log(chalk.yellow(`\n  No hay deployments en "${opts.namespace}"\n`));
+        const workloads: WorkloadRef[] = [];
+        for (const result of results) {
+          if (result.status === 'fulfilled') workloads.push(...result.value);
+          else console.log(chalk.yellow(`  ⚠ ${errorMessage(result.reason)}`));
+        }
+        if (workloads.length === 0) {
+          console.log(chalk.yellow(`\n  No hay deployments, statefulsets ni daemonsets en "${opts.namespace}"\n`));
           return;
         }
 
-        name = await select('¿Qué deployment quieres reiniciar?', deployments.map((d) => d.name));
-        if (!(await confirm(`¿Reiniciar "${name}" en "${opts.namespace}"?`, false))) {
+        target = parseWorkloadRef(await select('¿Qué workload quieres reiniciar?', workloads.map(formatWorkloadRef)));
+        if (!(await confirm(`¿Reiniciar ${formatWorkloadRef(target)} en "${opts.namespace}"?`, false))) {
           console.log(chalk.gray('\n  Cancelado\n'));
           return;
         }
       }
 
-      spinner.start(`Reiniciando ${name}...`);
-      const deployment = await client.restartDeployment(opts.namespace, name);
-      spinner.succeed(chalk.green(
-        `🔄 Deployment "${deployment.name}" reiniciado: los pods se reemplazan según su estrategia de rollout`,
-      ));
+      spinner.start(`Reiniciando ${formatWorkloadRef(target)}...`);
+      const workload = await client.restartWorkload(target.kind, opts.namespace, target.name);
+      const how = workload.strategy === 'OnDelete'
+        ? 'con la estrategia OnDelete los pods toman el cambio cuando se borran'
+        : 'los pods se reemplazan según su estrategia de rollout';
+      spinner.succeed(chalk.green(`🔄 ${formatWorkloadRef(workload)} reiniciado: ${how}`));
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
+      process.exit(1);
+    }
+  });
+
+
+// ─── COMANDO: scale ──────────────────────────────────────────────
+program
+  .command('scale <workload> <replicas>')
+  .description('Escalar un deployment o statefulset (como kubectl scale): nombre de deployment o tipo/nombre (sts/db)')
+  .action(async (workloadArg, replicasArg) => {
+    const opts = program.opts();
+    const spinner = ora('Conectando al cluster...').start();
+
+    try {
+      const target = parseWorkloadRef(workloadArg);
+      if (!/^\d+$/.test(replicasArg)) {
+        throw new Error(`Número de réplicas inválido: "${replicasArg}"`);
+      }
+      const client = new KubeClient(opts.kubeconfig, opts.context);
+      spinner.text = `Escalando ${formatWorkloadRef(target)} a ${replicasArg} réplicas...`;
+      const workload = await client.scaleWorkload(target.kind, opts.namespace, target.name, Number(replicasArg));
+      const unit = workload.desired === 1 ? 'réplica' : 'réplicas';
+      spinner.succeed(chalk.green(`📏 ${formatWorkloadRef(workload)} escalado a ${workload.desired} ${unit}`));
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
+      process.exit(1);
+    }
+  });
+
+
+// ─── COMANDO: delete-pod ─────────────────────────────────────────
+program
+  .command('delete-pod [pod]')
+  .description('Borrar un pod (como kubectl delete pod); si lo gestiona un controller, este crea otro')
+  .action(async (podArg) => {
+    const opts = program.opts();
+    const spinner = ora('Conectando al cluster...').start();
+
+    try {
+      const client = new KubeClient(opts.kubeconfig, opts.context);
+      let name = podArg;
+
+      // Sin pod, elegir de la lista y confirmar (select elige solo si hay uno único)
+      if (!name) {
+        spinner.text = 'Obteniendo pods...';
+        const pods = await client.getPods(opts.namespace);
+        spinner.stop();
+
+        if (pods.length === 0) {
+          console.log(chalk.yellow(`\n  No hay pods en "${opts.namespace}"\n`));
+          return;
+        }
+
+        name = await select('¿Qué pod quieres borrar?', pods.map((p) => p.name));
+        if (!(await confirm(`¿Borrar el pod "${name}" en "${opts.namespace}"?`, false))) {
+          console.log(chalk.gray('\n  Cancelado\n'));
+          return;
+        }
+      }
+
+      spinner.start(`Borrando ${name}...`);
+      await client.deletePod(opts.namespace, name);
+      spinner.succeed(chalk.green(`🗑️  Pod "${name}" borrado`));
     } catch (err) {
       spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);

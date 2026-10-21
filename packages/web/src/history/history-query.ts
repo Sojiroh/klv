@@ -5,7 +5,7 @@ import { LEVEL_PRIORITY, assertK8sName, matchesQuery, parseLevel, parseLogLine }
 import type { LogLevel, QueryNode } from '@klv/core';
 import { COLUMN_LIST, sqlString } from './history-store';
 import type { HistoryStore, Row, SegmentRef, SqlParam } from './history-store';
-import { isRecord } from './type-guards';
+import { isRecord } from '../type-guards';
 import type { HistoryLog, HistoryQueryResponse } from './history.types';
 
 const DEFAULT_LIMIT = 1000;

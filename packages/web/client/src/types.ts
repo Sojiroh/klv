@@ -33,14 +33,17 @@ export interface Pod {
   age: string;
 }
 
-export interface DeploymentCondition {
+export type WorkloadKind = 'Deployment' | 'StatefulSet' | 'DaemonSet';
+
+export interface WorkloadCondition {
   type: string;
   status: string;
   reason?: string;
   message?: string;
 }
 
-export interface Deployment {
+export interface Workload {
+  kind: WorkloadKind;
   name: string;
   namespace: string;
   desired: number;
@@ -48,10 +51,12 @@ export interface Deployment {
   ready: number;
   updated: number;
   available: number;
+  strategy: string;
+  partition: number;
+  paused: boolean;
   generation: number;
   observedGeneration: number;
-  paused: boolean;
-  conditions: DeploymentCondition[];
+  conditions: WorkloadCondition[];
   restartedAt?: string;
   age: string;
 }

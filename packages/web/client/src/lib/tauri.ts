@@ -6,6 +6,10 @@ import type {
   StreamLogEvent,
   StreamOptions,
 } from '../types';
+import { WORKLOAD_KINDS, WORKLOAD_RESOURCES } from './workloads';
+
+// `deployments` -> `Deployment`, …
+const WORKLOAD_BY_RESOURCE = new Map(WORKLOAD_KINDS.map((kind) => [WORKLOAD_RESOURCES[kind], kind]));
 
 export const isTauri = () =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -36,11 +40,12 @@ function matchRoute(url: string): RouteMatch | null {
     return { command: 'get_namespaces', args: {} };
   }
 
-  const deployMatch = path.match(/^\/api\/deployments\/([^/]+)$/);
-  if (deployMatch) {
+  const workloadsMatch = path.match(/^\/api\/([^/]+)\/([^/]+)$/);
+  const workloadKind = workloadsMatch ? WORKLOAD_BY_RESOURCE.get(workloadsMatch[1]) : undefined;
+  if (workloadsMatch && workloadKind) {
     return {
-      command: 'get_deployments',
-      args: { namespace: decodeURIComponent(deployMatch[1]) },
+      command: 'get_workloads',
+      args: { kind: workloadKind, namespace: decodeURIComponent(workloadsMatch[2]) },
     };
   }
 
@@ -135,14 +140,30 @@ export async function invokeApi<T>(url: string, options: InvokeOptions = {}): Pr
   if (method === 'POST') {
     if (path === '/api/history/query') return invoke<T>('history_query', { request: body });
     if (path === '/api/history/clear') return invoke<T>('history_clear');
-    const restartMatch = path.match(/^\/api\/deployments\/([^/]+)\/([^/]+)\/restart$/);
-    if (restartMatch) {
-      return invoke<T>('restart_deployment', {
-        namespace: decodeURIComponent(restartMatch[1]),
-        name: decodeURIComponent(restartMatch[2]),
-      });
+    const actionMatch = path.match(/^\/api\/([^/]+)\/([^/]+)\/([^/]+)\/(restart|scale)$/);
+    const kind = actionMatch ? WORKLOAD_BY_RESOURCE.get(actionMatch[1]) : undefined;
+    if (actionMatch && kind) {
+      const target = {
+        kind,
+        namespace: decodeURIComponent(actionMatch[2]),
+        name: decodeURIComponent(actionMatch[3]),
+      };
+      if (actionMatch[4] === 'restart') return invoke<T>('restart_workload', target);
+      const replicas = body !== null && typeof body === 'object' && 'replicas' in body ? body.replicas : undefined;
+      return invoke<T>('scale_workload', { ...target, replicas });
     }
     throw new Error(`No Tauri command mapped for: POST ${url}`);
+  }
+
+  if (method === 'DELETE') {
+    const podMatch = path.match(/^\/api\/pods\/([^/]+)\/([^/]+)$/);
+    if (!podMatch) {
+      throw new Error(`No Tauri command mapped for: DELETE ${url}`);
+    }
+    return invoke<T>('delete_pod', {
+      namespace: decodeURIComponent(podMatch[1]),
+      name: decodeURIComponent(podMatch[2]),
+    });
   }
 
   const route = matchRoute(url);

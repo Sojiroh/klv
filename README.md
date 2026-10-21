@@ -1,6 +1,6 @@
 # KLV — Kubernetes Log Viewer
 
-Monorepo con CLI y Web UI para ver logs JSON de Kubernetes y operar workloads como en Lens/OpenLens (por ahora: reiniciar deployments). Lee tu kubeconfig existente (el mismo que usa OpenLens).
+Monorepo con CLI y Web UI para ver logs JSON de Kubernetes y operar workloads como en Lens/OpenLens (reiniciar deployments, statefulsets y daemonsets, escalar replicas y borrar pods). Lee tu kubeconfig existente (el mismo que usa OpenLens).
 
 ## Estructura
 
@@ -58,8 +58,11 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 
 ### Paginas
 
-- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status, reinicios, link a logs agregados y a los logs del contenedor anterior
-- **Deployments** — Deployments del namespace con pods listos/deseados, up-to-date, available, estado del rollout (`Ready`, `Rolling out`, `Unavailable`, `Failed`, `Paused`, con la misma logica que `kubectl rollout status`), ultimo reinicio y edad. **Restart** (con confirmacion) hace lo mismo que `kubectl rollout restart` y la tabla sigue el rollout cada 2 s hasta que termina. Los deployments pausados no se pueden reiniciar (igual que kubectl)
+- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status (`Terminating` si el pod se esta borrando, como kubectl), reinicios, link a logs agregados y a los logs del contenedor anterior, y **borrar pod** (con confirmacion; si lo gestiona un controller, este crea otro). Mientras hay pods `Pending` o `Terminating` la tabla se refresca cada 3 s
+- **Workloads** — Pestañas Deployments / StatefulSets / DaemonSets (`?kind=` en la URL) con pods listos/deseados, up-to-date, available, estado (`Ready`, `Rolling out`, `Not ready`, `Failed`, `Paused`, con los mismos criterios que `kubectl rollout status` de cada tipo), ultimo reinicio y edad. Acciones con confirmacion en la fila:
+  - **Restart** (los tres tipos) hace lo mismo que `kubectl rollout restart`; los deployments pausados no se pueden reiniciar (igual que kubectl). Con la estrategia `OnDelete` los pods solo toman el cambio al borrarlos y el estado indica cuantos quedan desactualizados
+  - **Scale** (deployments y statefulsets) cambia `spec.replicas` como `kubectl scale`; escalar a 0 se marca en rojo
+  - La tabla se refresca cada 2 s durante un rollout y cada 5 s mientras haya pods no listos
 - **Logs** — Log Explorer de un pod o de un container agregado (multi-pod)
 - **Search** — Log Explorer sobre todos los pods de un namespace (opcionalmente filtrado por container)
 - **Stream** — Live tail via WebSocket con buffer configurable (2k–500k lineas o sin limite, con estimacion de memoria en vivo) y el mismo query language, facetas, columnas y export sobre el buffer
@@ -109,10 +112,12 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `GET /api/contexts` | Contextos disponibles y el contexto activo del servidor |
 | `PUT /api/contexts/:name` | Cambiar el contexto activo del servidor (solo en memoria, no modifica `~/.kube/config`) |
 | `GET /api/namespaces` | Listar namespaces |
-| `GET /api/pods/:namespace` | Listar pods |
+| `GET /api/pods/:namespace` | Listar pods (`status` es la fase, o `Terminating` si tiene `deletionTimestamp`) |
+| `DELETE /api/pods/:namespace/:name` | Borrar un pod como `kubectl delete pod` (con su periodo de gracia); responde 204 |
 | `GET /api/containers/:namespace` | Nombres de container distintos y ordenados de los pods del namespace (query: `context`, `label`) |
-| `GET /api/deployments/:namespace` | Listar deployments: `{ name, namespace, desired, current, ready, updated, available, generation, observedGeneration, paused, conditions[], restartedAt?, age }` |
-| `POST /api/deployments/:namespace/:name/restart` | Reiniciar un deployment como `kubectl rollout restart` (strategic merge patch de la anotacion `kubectl.kubernetes.io/restartedAt` del template, `fieldManager=klv`); responde el deployment actualizado. 409 si esta pausado |
+| `GET /api/deployments/:namespace`, `GET /api/statefulsets/:namespace`, `GET /api/daemonsets/:namespace` | Listar workloads: `{ kind, name, namespace, desired, current, ready, updated, available, strategy, partition, paused, generation, observedGeneration, conditions[], restartedAt?, age }` (en daemonsets, `desired` es el numero de pods programados) |
+| `POST /api/{deployments,statefulsets,daemonsets}/:namespace/:name/restart` | Reiniciar como `kubectl rollout restart` (strategic merge patch de la anotacion `kubectl.kubernetes.io/restartedAt` del template, `fieldManager=klv`); responde el workload actualizado. 409 si el deployment esta pausado |
+| `POST /api/{deployments,statefulsets}/:namespace/:name/scale` | Escalar como `kubectl scale` (`{ "replicas": n }`, merge patch del subrecurso `scale`, `fieldManager=klv`); responde el workload actualizado. 400 en daemonsets o si `replicas` no es un entero >= 0 |
 | `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod; la respuesta se limita a 32 MB de lineas: si se supera se conservan las mas recientes y se indica con `truncated` (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods`; la respuesta se limita a 32 MB de lineas (repartidos entre los pods): si se supera se conservan las mas recientes y se indica con `truncatedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `containers`, `minLevel` y `exclude` opcionales; el `container` legado se sigue aceptando) y retencion |
@@ -120,7 +125,7 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
 | `POST /api/history/clear` | Borrar el historial |
 
-Los `POST`/`PUT` de `/api/history` y el restart de deployments requieren `Content-Type: application/json` (bloquea formularios cross-site).
+Los `POST`/`PUT` de `/api/history` y las acciones sobre workloads requieren `Content-Type: application/json` (bloquea formularios cross-site); `DELETE` no lo necesita porque un formulario no puede enviarlo y el navegador exige preflight CORS.
 
 Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 409 al reiniciar un deployment pausado, 502 si falla el apiserver).
 
@@ -164,8 +169,10 @@ npm run build:desktop
 | `get_namespaces` | Listar namespaces |
 | `get_pods` | Listar pods de un namespace |
 | `get_containers` | Listar containers distintos de un namespace |
-| `get_deployments` | Listar deployments (mismo formato que la API REST) |
-| `restart_deployment` | Reiniciar un deployment (como `kubectl rollout restart`) |
+| `delete_pod` | Borrar un pod (como `kubectl delete pod`) |
+| `get_workloads` | Listar deployments, statefulsets o daemonsets (`kind`; mismo formato que la API REST) |
+| `restart_workload` | Reiniciar un workload (como `kubectl rollout restart`) |
+| `scale_workload` | Escalar un deployment o statefulset (como `kubectl scale`) |
 | `get_pod_logs` | Logs parseados de un pod |
 | `get_container_logs` | Logs agregados por container |
 | `stream_start` | Iniciar stream en tiempo real |
@@ -213,11 +220,21 @@ klv -n mi-namespace logs mi-pod --show-extra
 # Ver JSON raw formateado
 klv -n mi-namespace logs mi-pod --raw
 
-# Reiniciar un deployment (como kubectl rollout restart)
+# Reiniciar un workload (como kubectl rollout restart): nombre de deployment o tipo/nombre
 klv -n mi-namespace restart mi-servicio
+klv -n mi-namespace restart statefulset/mi-db      # alias: sts/, ds/, deploy/
+klv -n mi-namespace restart ds/mi-agente
 
-# Interactivo: elegir el deployment y confirmar
+# Interactivo: elegir entre deployments, statefulsets y daemonsets y confirmar
 klv -n mi-namespace restart
+
+# Escalar un deployment o statefulset (como kubectl scale)
+klv -n mi-namespace scale mi-servicio 3
+klv -n mi-namespace scale sts/mi-db 0
+
+# Borrar un pod (como kubectl delete pod); sin nombre, elegir y confirmar
+klv -n mi-namespace delete-pod mi-pod-abc12
+klv -n mi-namespace delete-pod
 ```
 
 ### Streaming en tiempo real
