@@ -7,7 +7,7 @@ import ora from 'ora';
 import Table from 'cli-table3';
 import { KubeClient, parseLogLine, parseLevel, matchesFilter, type LogFilter, type LogLevel, type ParsedLog } from '@klv/core';
 import { formatLog, formatLogSeparator, formatStats, type FormatOptions } from './ui/formatter.js';
-import { select, multiSelect } from './ui/prompts.js';
+import { select, multiSelect, confirm } from './ui/prompts.js';
 
 // dist/cli.js y src/cli.ts viven un nivel por debajo de package.json
 const { version: VERSION } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -476,6 +476,47 @@ program
 
       printNotices();
       console.log();
+    } catch (err) {
+      spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
+      process.exit(1);
+    }
+  });
+
+// ─── COMANDO: restart ────────────────────────────────────────────
+program
+  .command('restart [deployment]')
+  .description('Reiniciar un deployment (como kubectl rollout restart)')
+  .action(async (deploymentArg) => {
+    const opts = program.opts();
+    const spinner = ora('Conectando al cluster...').start();
+
+    try {
+      const client = new KubeClient(opts.kubeconfig, opts.context);
+      let name = deploymentArg;
+
+      // Sin nombre, elegir de la lista y confirmar (select elige solo si hay un único deployment)
+      if (!name) {
+        spinner.text = 'Obteniendo deployments...';
+        const deployments = await client.getDeployments(opts.namespace);
+        spinner.stop();
+
+        if (deployments.length === 0) {
+          console.log(chalk.yellow(`\n  No hay deployments en "${opts.namespace}"\n`));
+          return;
+        }
+
+        name = await select('¿Qué deployment quieres reiniciar?', deployments.map((d) => d.name));
+        if (!(await confirm(`¿Reiniciar "${name}" en "${opts.namespace}"?`, false))) {
+          console.log(chalk.gray('\n  Cancelado\n'));
+          return;
+        }
+      }
+
+      spinner.start(`Reiniciando ${name}...`);
+      const deployment = await client.restartDeployment(opts.namespace, name);
+      spinner.succeed(chalk.green(
+        `🔄 Deployment "${deployment.name}" reiniciado: los pods se reemplazan según su estrategia de rollout`,
+      ));
     } catch (err) {
       spinner.fail(chalk.red(`Error: ${errorMessage(err)}`));
       process.exit(1);

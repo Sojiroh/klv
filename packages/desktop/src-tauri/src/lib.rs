@@ -34,6 +34,7 @@ pub fn run() {
             commands::pods::get_pods,
             commands::pods::get_containers,
             commands::deployments::get_deployments,
+            commands::deployments::restart_deployment,
             commands::logs::get_pod_logs,
             commands::logs::get_container_logs,
             commands::logs::stream_start,

@@ -135,6 +135,13 @@ export async function invokeApi<T>(url: string, options: InvokeOptions = {}): Pr
   if (method === 'POST') {
     if (path === '/api/history/query') return invoke<T>('history_query', { request: body });
     if (path === '/api/history/clear') return invoke<T>('history_clear');
+    const restartMatch = path.match(/^\/api\/deployments\/([^/]+)\/([^/]+)\/restart$/);
+    if (restartMatch) {
+      return invoke<T>('restart_deployment', {
+        namespace: decodeURIComponent(restartMatch[1]),
+        name: decodeURIComponent(restartMatch[2]),
+      });
+    }
     throw new Error(`No Tauri command mapped for: POST ${url}`);
   }
 

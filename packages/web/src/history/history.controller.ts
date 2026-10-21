@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post, Put, UseGuards } from '@nestjs/common';
+import { JsonContentTypeGuard } from '../json-content-type.guard';
 import { HistoryService } from './history.service';
-import { JsonContentTypeGuard } from './json-content-type.guard';
 
 @Controller('history')
 export class HistoryController {

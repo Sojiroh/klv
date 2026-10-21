@@ -1,4 +1,5 @@
-import { Controller, Get, Put, Param, Query } from '@nestjs/common';
+import { Controller, Get, HttpCode, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { JsonContentTypeGuard } from '../json-content-type.guard';
 import { KubeService } from './kube.service';
 
 @Controller()
@@ -40,5 +41,12 @@ export class KubeController {
   @Get('deployments/:namespace')
   getDeployments(@Param('namespace') namespace: string) {
     return this.kubeService.getDeployments(namespace);
+  }
+
+  @Post('deployments/:namespace/:name/restart')
+  @HttpCode(200)
+  @UseGuards(JsonContentTypeGuard)
+  restartDeployment(@Param('namespace') namespace: string, @Param('name') name: string) {
+    return this.kubeService.restartDeployment(namespace, name);
   }
 }

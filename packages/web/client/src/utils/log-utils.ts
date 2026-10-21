@@ -1,4 +1,5 @@
 import type { LogLevel } from '../types';
+import type { RolloutPhase } from '../lib/rollout';
 
 export const LEVEL_ORDER: LogLevel[] = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL', 'UNKNOWN'];
 
@@ -19,6 +20,14 @@ export const statusStyles: Record<string, { dot: string; text: string }> = {
   Succeeded: { dot: 'bg-blue-500', text: 'text-blue-600' },
   Failed: { dot: 'bg-red-500', text: 'text-red-600' },
   Unknown: { dot: 'bg-slate-400', text: 'text-slate-500' },
+};
+
+export const rolloutStyles: Record<RolloutPhase, { dot: string; text: string; label: string }> = {
+  ready: { dot: 'bg-emerald-500', text: 'text-emerald-600', label: 'Ready' },
+  progressing: { dot: 'bg-blue-500 animate-pulse-dot', text: 'text-blue-600', label: 'Rolling out' },
+  unavailable: { dot: 'bg-amber-500', text: 'text-amber-600', label: 'Unavailable' },
+  failed: { dot: 'bg-red-500', text: 'text-red-600', label: 'Failed' },
+  paused: { dot: 'bg-slate-400', text: 'text-slate-500', label: 'Paused' },
 };
 
 export function prettyRaw(raw: string): string {

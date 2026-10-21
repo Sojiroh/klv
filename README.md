@@ -1,6 +1,6 @@
 # KLV — Kubernetes Log Viewer
 
-Monorepo con CLI y Web UI para ver logs JSON de Kubernetes. Lee tu kubeconfig existente (el mismo que usa OpenLens).
+Monorepo con CLI y Web UI para ver logs JSON de Kubernetes y operar workloads como en Lens/OpenLens (por ahora: reiniciar deployments). Lee tu kubeconfig existente (el mismo que usa OpenLens).
 
 ## Estructura
 
@@ -59,6 +59,7 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 ### Paginas
 
 - **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status, reinicios, link a logs agregados y a los logs del contenedor anterior
+- **Deployments** — Deployments del namespace con pods listos/deseados, up-to-date, available, estado del rollout (`Ready`, `Rolling out`, `Unavailable`, `Failed`, `Paused`, con la misma logica que `kubectl rollout status`), ultimo reinicio y edad. **Restart** (con confirmacion) hace lo mismo que `kubectl rollout restart` y la tabla sigue el rollout cada 2 s hasta que termina. Los deployments pausados no se pueden reiniciar (igual que kubectl)
 - **Logs** — Log Explorer de un pod o de un container agregado (multi-pod)
 - **Search** — Log Explorer sobre todos los pods de un namespace (opcionalmente filtrado por container)
 - **Stream** — Live tail via WebSocket con buffer configurable (2k–500k lineas o sin limite, con estimacion de memoria en vivo) y el mismo query language, facetas, columnas y export sobre el buffer
@@ -110,7 +111,8 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `GET /api/namespaces` | Listar namespaces |
 | `GET /api/pods/:namespace` | Listar pods |
 | `GET /api/containers/:namespace` | Nombres de container distintos y ordenados de los pods del namespace (query: `context`, `label`) |
-| `GET /api/deployments/:namespace` | Listar deployments |
+| `GET /api/deployments/:namespace` | Listar deployments: `{ name, namespace, desired, current, ready, updated, available, generation, observedGeneration, paused, conditions[], restartedAt?, age }` |
+| `POST /api/deployments/:namespace/:name/restart` | Reiniciar un deployment como `kubectl rollout restart` (strategic merge patch de la anotacion `kubectl.kubernetes.io/restartedAt` del template, `fieldManager=klv`); responde el deployment actualizado. 409 si esta pausado |
 | `GET /api/pods/:ns/:pod/logs` | Logs parseados de un pod; la respuesta se limita a 32 MB de lineas: si se supera se conservan las mas recientes y se indica con `truncated` (query: `container`, `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods`; la respuesta se limita a 32 MB de lineas (repartidos entre los pods): si se supera se conservan las mas recientes y se indica con `truncatedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `containers`, `minLevel` y `exclude` opcionales; el `container` legado se sigue aceptando) y retencion |
@@ -118,9 +120,9 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
 | `POST /api/history/clear` | Borrar el historial |
 
-Los `POST`/`PUT` de `/api/history` requieren `Content-Type: application/json`.
+Los `POST`/`PUT` de `/api/history` y el restart de deployments requieren `Content-Type: application/json` (bloquea formularios cross-site).
 
-Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 502 si falla el apiserver).
+Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 409 al reiniciar un deployment pausado, 502 si falla el apiserver).
 
 ### WebSocket
 
@@ -162,7 +164,8 @@ npm run build:desktop
 | `get_namespaces` | Listar namespaces |
 | `get_pods` | Listar pods de un namespace |
 | `get_containers` | Listar containers distintos de un namespace |
-| `get_deployments` | Listar deployments |
+| `get_deployments` | Listar deployments (mismo formato que la API REST) |
+| `restart_deployment` | Reiniciar un deployment (como `kubectl rollout restart`) |
 | `get_pod_logs` | Logs parseados de un pod |
 | `get_container_logs` | Logs agregados por container |
 | `stream_start` | Iniciar stream en tiempo real |
@@ -209,6 +212,12 @@ klv -n mi-namespace logs mi-pod --show-extra
 
 # Ver JSON raw formateado
 klv -n mi-namespace logs mi-pod --raw
+
+# Reiniciar un deployment (como kubectl rollout restart)
+klv -n mi-namespace restart mi-servicio
+
+# Interactivo: elegir el deployment y confirmar
+klv -n mi-namespace restart
 ```
 
 ### Streaming en tiempo real

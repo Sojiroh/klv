@@ -1,16 +1,14 @@
-import { useState } from 'react';
 import { useApi } from '../hooks/useApi';
+import { useContexts } from '../hooks/useContexts';
 import { useNamespaces } from '../hooks/useNamespaces';
 import ContextSelector from '../components/ContextSelector';
 import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
 import ErrorNotice from '../components/ErrorNotice';
-import { type ContextsResponse, type Pod } from '../types';
-import { apiRequest, errorMessage } from '../lib/api';
+import { type Pod } from '../types';
 
 export default function Dashboard() {
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
-  const [switchError, setSwitchError] = useState<string | null>(null);
-  const { data: ctxData, error: ctxError } = useApi<ContextsResponse>('/api/contexts');
+  const { contexts: ctxData, error: ctxError, switchContext } = useContexts();
   const { data: pods, loading, error: podsError } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
@@ -29,18 +27,7 @@ export default function Dashboard() {
     }, {}),
   );
 
-  const handleContextSwitch = async (name: string) => {
-    setSwitchError(null);
-    try {
-      await apiRequest(`/api/contexts/${encodeURIComponent(name)}`, { method: 'PUT' });
-    } catch (err) {
-      setSwitchError(errorMessage(err));
-      return;
-    }
-    window.location.reload();
-  };
-
-  const error = switchError ?? ctxError ?? namespacesError ?? podsError;
+  const error = ctxError ?? namespacesError ?? podsError;
 
   return (
     <div className="stagger-children">
@@ -48,7 +35,7 @@ export default function Dashboard() {
         <ContextSelector
           contexts={ctxData.contexts}
           current={ctxData.current}
-          onSwitch={handleContextSwitch}
+          onSwitch={switchContext}
           namespaces={namespaces}
           namespace={namespace}
           onNamespaceChange={setNamespace}

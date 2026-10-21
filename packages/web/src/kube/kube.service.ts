@@ -52,6 +52,10 @@ export class KubeService {
     return this.client.getDeployments(namespace);
   }
 
+  restartDeployment(namespace: string, name: string) {
+    return this.client.restartDeployment(namespace, name);
+  }
+
   getLogs(options: LogOptions, maxChars?: number) {
     return this.client.getLogs(options, maxChars);
   }

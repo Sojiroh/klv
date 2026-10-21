@@ -33,6 +33,29 @@ export interface Pod {
   age: string;
 }
 
+export interface DeploymentCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+}
+
+export interface Deployment {
+  name: string;
+  namespace: string;
+  desired: number;
+  current: number;
+  ready: number;
+  updated: number;
+  available: number;
+  generation: number;
+  observedGeneration: number;
+  paused: boolean;
+  conditions: DeploymentCondition[];
+  restartedAt?: string;
+  age: string;
+}
+
 export interface FailedPod {
   pod: string;
   error: string;

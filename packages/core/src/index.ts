@@ -1,5 +1,14 @@
 export { KubeClient, MAX_LOG_READ_CHARS } from './kube-client.js';
-export type { PodInfo, LogOptions, LogRead, StreamHandlers, PodWatchEventType, PodWatchHandlers } from './kube-client.js';
+export type {
+  PodInfo,
+  DeploymentInfo,
+  DeploymentCondition,
+  LogOptions,
+  LogRead,
+  StreamHandlers,
+  PodWatchEventType,
+  PodWatchHandlers,
+} from './kube-client.js';
 export { KubeError } from './errors.js';
 export { assertK8sName } from './k8s-names.js';
 export type { K8sNameKind } from './k8s-names.js';

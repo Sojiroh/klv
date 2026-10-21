@@ -17,6 +17,35 @@ export interface PodInfo {
   restarts: Record<string, number>;
 }
 
+export interface DeploymentCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+}
+
+export interface DeploymentInfo {
+  name: string;
+  namespace: string;
+  // Réplicas deseadas (spec.replicas) y conteos del status
+  desired: number;
+  current: number;
+  ready: number;
+  updated: number;
+  available: number;
+  // observedGeneration < generation: el controller todavía no procesó el último cambio del spec
+  generation: number;
+  observedGeneration: number;
+  paused: boolean;
+  conditions: DeploymentCondition[];
+  // Fecha (RFC 3339) del último reinicio hecho con klv, kubectl o Lens
+  restartedAt?: string;
+  age: string;
+}
+
+// Misma anotación que `kubectl rollout restart` y Lens
+const RESTARTED_AT_ANNOTATION = 'kubectl.kubernetes.io/restartedAt';
+
 export interface LogOptions {
   namespace: string;
   podName: string;
@@ -300,13 +329,40 @@ export class KubeClient {
     }
   }
 
-  async getDeployments(namespace: string): Promise<string[]> {
+  async getDeployments(namespace: string): Promise<DeploymentInfo[]> {
     assertK8sName('namespace', namespace);
     try {
       const res = await this.appsApi.listNamespacedDeployment({ namespace });
-      return (res.items ?? []).map((d) => d.metadata?.name ?? '').filter(Boolean);
+      return (res.items ?? []).map((d) => this.toDeploymentInfo(d, namespace));
     } catch (err) {
       throw toKubeError(err, `Error al obtener deployments del namespace "${namespace}"`);
+    }
+  }
+
+  // Como `kubectl rollout restart`: cambia una anotación del template y el controller reemplaza los pods
+  // con la estrategia del deployment. Igual que kubectl, rechaza los deployments pausados.
+  async restartDeployment(namespace: string, name: string): Promise<DeploymentInfo> {
+    assertK8sName('namespace', namespace);
+    assertK8sName('deployment', name);
+    const action = `Error al reiniciar el deployment "${name}"`;
+    try {
+      const deployment = await this.appsApi.readNamespacedDeployment({ name, namespace });
+      if (deployment.spec?.paused) {
+        throw new KubeError(`${action}: está pausado, reanude el rollout primero`, 409);
+      }
+      const restartedAt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+      const patched = await this.appsApi.patchNamespacedDeployment(
+        {
+          name,
+          namespace,
+          fieldManager: 'klv',
+          body: { spec: { template: { metadata: { annotations: { [RESTARTED_AT_ANNOTATION]: restartedAt } } } } },
+        },
+        k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.StrategicMergePatch),
+      );
+      return this.toDeploymentInfo(patched, namespace);
+    } catch (err) {
+      throw toKubeError(err, action);
     }
   }
 
@@ -514,6 +570,30 @@ export class KubeClient {
       labels: pod.metadata?.labels ?? {},
       age: this.getAge(pod.metadata?.creationTimestamp),
       restarts,
+    };
+  }
+
+  private toDeploymentInfo(deployment: k8s.V1Deployment, namespace: string): DeploymentInfo {
+    const { metadata, spec, status } = deployment;
+    return {
+      name: metadata?.name ?? '',
+      namespace: metadata?.namespace ?? namespace,
+      desired: spec?.replicas ?? 1,
+      current: status?.replicas ?? 0,
+      ready: status?.readyReplicas ?? 0,
+      updated: status?.updatedReplicas ?? 0,
+      available: status?.availableReplicas ?? 0,
+      generation: metadata?.generation ?? 0,
+      observedGeneration: status?.observedGeneration ?? 0,
+      paused: spec?.paused ?? false,
+      conditions: (status?.conditions ?? []).map((c) => ({
+        type: c.type,
+        status: c.status,
+        reason: c.reason,
+        message: c.message,
+      })),
+      restartedAt: spec?.template?.metadata?.annotations?.[RESTARTED_AT_ANNOTATION],
+      age: this.getAge(metadata?.creationTimestamp),
     };
   }
 

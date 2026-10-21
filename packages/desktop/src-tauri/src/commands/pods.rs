@@ -121,7 +121,7 @@ pub async fn get_containers(
     Ok(names.into_iter().collect())
 }
 
-fn get_age(timestamp: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>) -> String {
+pub(crate) fn get_age(timestamp: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::Time>) -> String {
     let Some(ts) = timestamp else {
         return "Unknown".into();
     };
