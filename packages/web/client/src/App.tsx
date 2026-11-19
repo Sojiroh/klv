@@ -1,5 +1,8 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { useContexts } from './hooks/useContexts';
+import ContextSelector from './components/ContextSelector';
 import ErrorBoundary from './components/ErrorBoundary';
+import ErrorNotice from './components/ErrorNotice';
 import Dashboard from './pages/Dashboard';
 import Workloads from './pages/Workloads';
 import Logs from './pages/Logs';
@@ -17,6 +20,7 @@ const navItems = [
 
 export default function App() {
   const location = useLocation();
+  const { contexts, error: ctxError, switchContext } = useContexts();
   const isActive = (path: string) =>
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
 
@@ -59,11 +63,20 @@ export default function App() {
               </Link>
             ))}
           </div>
+
+          {contexts && (
+            <ContextSelector
+              contexts={contexts.contexts}
+              current={contexts.current}
+              onSwitch={switchContext}
+            />
+          )}
         </div>
       </nav>
 
       {/* Main content */}
       <main className="px-6 py-6 max-w-[1680px] mx-auto animate-fade-in">
+        {ctxError && <ErrorNotice message={ctxError} />}
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Dashboard />} />

@@ -1,9 +1,8 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useContexts } from '../hooks/useContexts';
 import { useNamespaces } from '../hooks/useNamespaces';
 import { useWorkloads } from '../hooks/useWorkloads';
-import ContextSelector from '../components/ContextSelector';
+import NamespaceSelector from '../components/NamespaceSelector';
 import ErrorNotice from '../components/ErrorNotice';
 import { apiRequest, errorMessage } from '../lib/api';
 import { rolloutState } from '../lib/rollout';
@@ -62,7 +61,6 @@ export default function Workloads() {
   const [params, setParams] = useSearchParams();
   const kind = WORKLOAD_KINDS.find((k) => WORKLOAD_RESOURCES[k] === params.get('kind')) ?? 'Deployment';
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
-  const { contexts, error: ctxError, switchContext } = useContexts();
   const { workloads, loading, errors, pollMs, refresh, replace } = useWorkloads(namespace);
   // Row with an open confirmation (`Kind/name`) and row whose action is in flight
   const [open, setOpen] = useState<{ key: string; mode: RowMode } | null>(null);
@@ -106,23 +104,15 @@ export default function Workloads() {
   const counts: Record<WorkloadKind, number> = { Deployment: 0, StatefulSet: 0, DaemonSet: 0 };
   for (const w of workloads ?? []) counts[w.kind]++;
   const rows = workloads?.filter((w) => w.kind === kind) ?? null;
-  const error = ctxError ?? namespacesError;
   const now = Date.now();
 
   return (
     <div className="stagger-children">
-      {contexts && (
-        <ContextSelector
-          contexts={contexts.contexts}
-          current={contexts.current}
-          onSwitch={switchContext}
-          namespaces={namespaces}
-          namespace={namespace}
-          onNamespaceChange={changeNamespace}
-        />
+      {namespaces && namespace && (
+        <NamespaceSelector namespaces={namespaces} namespace={namespace} onChange={changeNamespace} />
       )}
 
-      {error && <ErrorNotice message={error} />}
+      {namespacesError && <ErrorNotice message={namespacesError} />}
       {errors.map((message) => <ErrorNotice key={message} message={message} />)}
       {actionError && <ErrorNotice message={actionError} />}
 

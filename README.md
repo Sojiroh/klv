@@ -58,7 +58,9 @@ El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por 
 
 ### Paginas
 
-- **Dashboard** — Selector de contexto/namespace, tabla de pods agrupados por container con status (`Terminating` si el pod se esta borrando, como kubectl), reinicios, link a logs agregados y a los logs del contenedor anterior, y **borrar pod** (con confirmacion; si lo gestiona un controller, este crea otro). Mientras hay pods `Pending` o `Terminating` la tabla se refresca cada 3 s
+El selector de **contexto** esta en la barra superior de todas las paginas; cambiarlo recarga la pagina actual con el nuevo contexto (solo en memoria, no modifica el kubeconfig).
+
+- **Dashboard** — Selector de namespace, tabla de pods agrupados por container con status (`Terminating` si el pod se esta borrando, como kubectl), reinicios, link a logs agregados y a los logs del contenedor anterior, y **borrar pod** (con confirmacion; si lo gestiona un controller, este crea otro). Mientras hay pods `Pending` o `Terminating` la tabla se refresca cada 3 s
 - **Workloads** — Pestañas Deployments / StatefulSets / DaemonSets (`?kind=` en la URL) con pods listos/deseados, up-to-date, available, estado (`Ready`, `Rolling out`, `Not ready`, `Failed`, `Paused`, con los mismos criterios que `kubectl rollout status` de cada tipo), ultimo reinicio y edad. Acciones con confirmacion en la fila:
   - **Restart** (los tres tipos) hace lo mismo que `kubectl rollout restart`; los deployments pausados no se pueden reiniciar (igual que kubectl). Con la estrategia `OnDelete` los pods solo toman el cambio al borrarlos y el estado indica cuantos quedan desactualizados
   - **Scale** (deployments y statefulsets) cambia `spec.replicas` como `kubectl scale`; escalar a 0 se marca en rojo

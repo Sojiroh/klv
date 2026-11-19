@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApi } from '../hooks/useApi';
-import { useContexts } from '../hooks/useContexts';
 import { useNamespaces } from '../hooks/useNamespaces';
-import ContextSelector from '../components/ContextSelector';
+import NamespaceSelector from '../components/NamespaceSelector';
 import ContainerTable, { type ContainerGroup } from '../components/ContainerTable';
 import ErrorNotice from '../components/ErrorNotice';
 import { apiRequest, errorMessage } from '../lib/api';
@@ -13,7 +12,6 @@ const TRANSITION_POLL_MS = 3000;
 
 export default function Dashboard() {
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
-  const { contexts: ctxData, error: ctxError, switchContext } = useContexts();
   const { data: pods, loading, error: podsError, reload } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
@@ -61,19 +59,12 @@ export default function Dashboard() {
     }, {}),
   );
 
-  const error = ctxError ?? namespacesError ?? podsError;
+  const error = namespacesError ?? podsError;
 
   return (
     <div className="stagger-children">
-      {ctxData && (
-        <ContextSelector
-          contexts={ctxData.contexts}
-          current={ctxData.current}
-          onSwitch={switchContext}
-          namespaces={namespaces}
-          namespace={namespace}
-          onNamespaceChange={changeNamespace}
-        />
+      {namespaces && namespace && (
+        <NamespaceSelector namespaces={namespaces} namespace={namespace} onChange={changeNamespace} />
       )}
 
       {error && <ErrorNotice message={error} />}
