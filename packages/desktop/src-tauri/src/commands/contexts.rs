@@ -14,20 +14,13 @@ pub struct ContextsResponse {
     pub contexts: Vec<String>,
 }
 
-/// Contexto del cliente en uso; si nunca se cambió, el `current-context` del kubeconfig.
-pub async fn active_context(state: &AppState, kubeconfig: &Kubeconfig) -> Option<String> {
-    match state.active_context.read().await.clone() {
-        Some(name) => Some(name),
-        None => kubeconfig.current_context.clone(),
-    }
-}
-
+/// `current` es el contexto del cliente que ejecuta los comandos; del kubeconfig solo se relee la lista.
 #[command]
 pub async fn get_contexts(state: State<'_, Arc<AppState>>) -> Result<ContextsResponse, KlvError> {
     let kubeconfig = Kubeconfig::read()
         .map_err(|e| KlvError::new(format!("No se pudo leer kubeconfig: {e}")))?;
 
-    let current = active_context(&state, &kubeconfig).await.unwrap_or_default();
+    let current = state.active_context().await.unwrap_or_default();
     let contexts: Vec<String> = kubeconfig
         .contexts
         .iter()
@@ -37,7 +30,7 @@ pub async fn get_contexts(state: State<'_, Arc<AppState>>) -> Result<ContextsRes
     Ok(ContextsResponse { current, contexts })
 }
 
-/// Cambia solo el cliente en proceso; no modifica el archivo kubeconfig.
+/// Cambia solo el cliente en proceso; no modifica el archivo kubeconfig. Detiene los streams activos.
 #[command]
 pub async fn set_context(state: State<'_, Arc<AppState>>, name: String) -> Result<(), KlvError> {
     let kubeconfig = Kubeconfig::read()
@@ -45,10 +38,13 @@ pub async fn set_context(state: State<'_, Arc<AppState>>, name: String) -> Resul
 
     if !kubeconfig.contexts.iter().any(|c| c.name == name) {
         let available: Vec<&str> = kubeconfig.contexts.iter().map(|c| c.name.as_str()).collect();
-        return Err(KlvError::new(format!(
-            "Contexto \"{name}\" no existe. Disponibles: {}",
-            available.join(", ")
-        )));
+        return Err(KlvError::with_status(
+            404,
+            format!(
+                "Contexto \"{name}\" no existe. Disponibles: {}",
+                available.join(", ")
+            ),
+        ));
     }
 
     let config = kube::Config::from_custom_kubeconfig(
@@ -64,8 +60,7 @@ pub async fn set_context(state: State<'_, Arc<AppState>>, name: String) -> Resul
     let client = Client::try_from(config)
         .map_err(|e| KlvError::new(format!("Error al crear cliente K8s: {e}")))?;
 
-    *state.client.write().await = Some(client);
-    *state.active_context.write().await = Some(name);
+    state.switch_context(client, name).await;
 
     Ok(())
 }

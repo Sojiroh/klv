@@ -77,6 +77,35 @@ export interface LogOptions {
   timestamps?: boolean;
 }
 
+export interface LogStream {
+  // Aborta la petición HTTP y silencia los handlers; idempotente
+  stop(): void;
+  // Deja de leer del apiserver (contrapresión TCP, no se descarta nada); idempotente
+  pause(): void;
+  // Idempotente; no hace nada tras stop()
+  resume(): void;
+}
+
+// Una línea más larga se entrega truncada a este límite y el resto se descarta hasta el siguiente salto
+export const MAX_STREAM_LINE_CHARS = 1024 * 1024;
+
+function validateLogRange(options: LogOptions): void {
+  const { tailLines, sinceSeconds } = options;
+  if (tailLines !== undefined && (!Number.isInteger(tailLines) || tailLines < 0)) {
+    throw new KubeError('tailLines debe ser un entero mayor o igual que 0', 400);
+  }
+  if (sinceSeconds !== undefined && (!Number.isInteger(sinceSeconds) || sinceSeconds < 1)) {
+    throw new KubeError('sinceSeconds debe ser un entero mayor o igual que 1', 400);
+  }
+}
+
+// @kubernetes/client-node solo añade tailLines a la URL si es truthy, así que 0 se omitiría y
+// el apiserver devolvería todo el log. Un objeto String('0') es truthy y serializa como "0".
+function toLibTailLines(tailLines: number | undefined): number | undefined {
+  if (tailLines === 0) return new String('0') as unknown as number;
+  return tailLines;
+}
+
 // Tope de caracteres de líneas por lectura de logs (32 MiB)
 export const MAX_LOG_READ_CHARS = 32 * 1024 * 1024;
 
@@ -447,6 +476,7 @@ export class KubeClient {
     assertK8sName('namespace', options.namespace);
     assertK8sName('pod', options.podName);
     if (options.container) assertK8sName('container', options.container);
+    validateLogRange(options);
     try {
       const stream = new PassThrough();
       stream.setEncoding('utf8');
@@ -465,7 +495,7 @@ export class KubeClient {
         stream,
         {
           // Con sinceTime solo se limita con tailLines si se indicó expresamente
-          tailLines: options.tailLines ?? (options.sinceTime ? undefined : 100),
+          tailLines: toLibTailLines(options.tailLines ?? (options.sinceTime ? undefined : 100)),
           sinceSeconds: options.sinceSeconds,
           sinceTime: options.sinceTime,
           previous: options.previous,
@@ -536,13 +566,16 @@ export class KubeClient {
     return teardown;
   }
 
-  // Nunca rechaza: los fallos van a onError. El cleanup devuelto aborta la petición HTTP y silencia los handlers.
-  async streamLogs(options: LogOptions, handlers: StreamHandlers): Promise<() => void> {
+  // Nunca rechaza: los fallos van a onError. stop() aborta la petición HTTP y silencia los handlers;
+  // pause()/resume() detienen/reanudan la lectura (contrapresión TCP, sin descartar datos).
+  async streamLogs(options: LogOptions, handlers: StreamHandlers): Promise<LogStream> {
     const { podName } = options;
     const stream = new PassThrough();
     let controller: AbortController | undefined;
     let active = true;
     let buffer = '';
+    // true mientras se descarta el resto de una línea que superó MAX_STREAM_LINE_CHARS
+    let discarding = false;
 
     const teardown = (): void => {
       active = false;
@@ -564,12 +597,29 @@ export class KubeClient {
 
     stream.on('data', (chunk: string) => {
       if (!active) return;
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!active) return;
-        emitLine(line);
+      let rest = chunk;
+      while (rest) {
+        const nl = rest.indexOf('\n');
+        if (!discarding) {
+          buffer += nl === -1 ? rest : rest.slice(0, nl);
+          if (buffer.length > MAX_STREAM_LINE_CHARS) {
+            const truncated = buffer.slice(0, MAX_STREAM_LINE_CHARS);
+            buffer = '';
+            discarding = true;
+            emitLine(truncated);
+            if (!active) return;
+          }
+        }
+        if (nl === -1) return;
+        if (discarding) {
+          discarding = false;
+        } else {
+          const line = buffer;
+          buffer = '';
+          emitLine(line);
+          if (!active) return;
+        }
+        rest = rest.slice(nl + 1);
       }
     });
 
@@ -593,6 +643,7 @@ export class KubeClient {
       assertK8sName('namespace', options.namespace);
       assertK8sName('pod', options.podName);
       if (options.container) assertK8sName('container', options.container);
+      validateLogRange(options);
 
       const log = new k8s.Log(this.kc);
       controller = await log.log(
@@ -602,7 +653,7 @@ export class KubeClient {
         stream,
         {
           follow: true,
-          tailLines: options.sinceTime ? undefined : (options.tailLines ?? 50),
+          tailLines: toLibTailLines(options.sinceTime ? undefined : (options.tailLines ?? 50)),
           sinceTime: options.sinceTime,
           timestamps: options.timestamps,
         }
@@ -612,7 +663,15 @@ export class KubeClient {
       fail(toKubeError(err, `Error al abrir el stream de logs del pod "${podName}"`));
     }
 
-    return teardown;
+    return {
+      stop: teardown,
+      pause: () => {
+        if (active) stream.pause();
+      },
+      resume: () => {
+        if (active) stream.resume();
+      },
+    };
   }
 
   // Mismos datos para listados y eventos de watch

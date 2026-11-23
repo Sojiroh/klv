@@ -3,13 +3,12 @@ import { useApi } from '../hooks/useApi';
 import { useExplorerParams } from '../hooks/useExplorerParams';
 import { useNamespaces } from '../hooks/useNamespaces';
 import { apiRequest, errorMessage } from '../lib/api';
-import { resolveRange, sinceSeconds } from '../lib/time';
+import { cachedTime, resolveRange, sinceSeconds } from '../lib/time';
 import ErrorNotice from '../components/ErrorNotice';
 import FailedPodsWarning from '../components/FailedPodsWarning';
 import CappedWarning from '../components/explorer/CappedWarning';
 import Explorer from '../components/explorer/Explorer';
 import LoadControls from '../components/explorer/LoadControls';
-import { cachedTime } from '../components/explorer/pipeline';
 import { type FailedPod, type LogsResponse, type ParsedLog, type Pod } from '../types';
 
 interface SearchResult {

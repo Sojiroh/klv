@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useApi } from '../hooks/useApi';
 import { useExplorerParams } from '../hooks/useExplorerParams';
 import { useNamespaces } from '../hooks/useNamespaces';
@@ -6,7 +6,7 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { useStream } from '../hooks/useStream';
 import ErrorNotice from '../components/ErrorNotice';
 import Explorer from '../components/explorer/Explorer';
-import { type ParsedLog, type Pod } from '../types';
+import { type Pod } from '../types';
 
 /** Persisted sentinel: keep every line (the hook receives Infinity). */
 const UNLIMITED = 0;
@@ -52,7 +52,6 @@ export default function Stream() {
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
   const [selectedContainer, setSelectedContainer] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
-  const [frozen, setFrozen] = useState<ParsedLog[] | null>(null);
   const [storedBufferSize, setBufferSize] = usePersistentState('klv.stream.bufferSize', DEFAULT_BUFFER_SIZE);
   const bufferSize = BUFFER_SIZES.includes(storedBufferSize) ? storedBufferSize : DEFAULT_BUFFER_SIZE;
   const unlimited = bufferSize === UNLIMITED;
@@ -60,16 +59,8 @@ export default function Stream() {
   const { data: pods, error: podsError } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
-  const { logs, dropped, approxBytes, notices, connected, streaming, start, stop, clear } = useStream({
-    bufferSize: unlimited ? Infinity : bufferSize,
-  });
-
-  const paused = frozen !== null;
-  const displayed = frozen ?? logs;
-
-  useEffect(() => {
-    if (!streaming) setFrozen(null);
-  }, [streaming]);
+  const { logs, dropped, approxBytes, paused, heldCount, notices, connected, streaming, start, stop, clear, pause, resume } =
+    useStream({ bufferSize: unlimited ? Infinity : bufferSize });
 
   const containers = useMemo(() => {
     if (!pods) return [];
@@ -92,17 +83,7 @@ export default function Stream() {
     });
   };
 
-  const handleStop = () => {
-    stop();
-    setFrozen(null);
-  };
-
-  const handleClear = () => {
-    clear();
-    if (paused) setFrozen([]);
-  };
-
-  const togglePause = () => setFrozen(paused ? null : logs);
+  const togglePause = () => (paused ? resume() : pause());
 
   const error = namespacesError ?? podsError;
 
@@ -186,7 +167,7 @@ export default function Stream() {
       {/* Streaming controls */}
       {streaming && (
         <div className="flex flex-wrap items-center gap-3 mb-4 animate-fade-in">
-          <button onClick={handleStop} className="klv-btn-danger">
+          <button onClick={stop} className="klv-btn-danger">
             Stop
           </button>
           <button
@@ -195,7 +176,7 @@ export default function Stream() {
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
-          <button onClick={handleClear} className="klv-btn-secondary">
+          <button onClick={clear} className="klv-btn-secondary">
             Clear
           </button>
 
@@ -218,7 +199,8 @@ export default function Stream() {
               </span>
             )}
             <span title="Lines currently in memory">
-              {displayed.length.toLocaleString()} buffered{paused && ' (paused)'}
+              {logs.length.toLocaleString()} buffered
+              {paused && ` (paused${heldCount > 0 ? `, +${heldCount.toLocaleString()} waiting` : ''})`}
               {(unlimited || bufferSize >= LARGE_BUFFER) && ` · ≈ ${formatMb(approxBytes)} MB`}
             </span>
           </span>
@@ -238,11 +220,11 @@ export default function Stream() {
       )}
 
       {/* Explorer over the live buffer (filtering is client-side; the stream is never restarted) */}
-      {(streaming || displayed.length > 0) && (
+      {(streaming || logs.length > 0) && (
         <Explorer
           params={params}
           source="kubelet"
-          logs={displayed}
+          logs={logs}
           showRange={false}
           followTail={streaming && autoScroll && !paused}
           scope={{ namespace: namespace ?? undefined, container: selectedContainer || undefined }}
@@ -259,7 +241,7 @@ export default function Stream() {
             )
           }
           onLogSelect={() => {
-            if (streaming && !paused) setFrozen(logs);
+            if (streaming) pause();
           }}
         />
       )}

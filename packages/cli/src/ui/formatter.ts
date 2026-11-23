@@ -65,10 +65,18 @@ function getPodColor(podName: string): (text: string) => string {
   return podColorMap.get(podName)!;
 }
 
+// Neutraliza caracteres de control (C0 salvo \n y \t, DEL y C1) para que un log no pueda inyectar
+// secuencias de escape en la terminal: se muestran como \xNN visibles
+const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+
+export function sanitizeLogText(text: string): string {
+  return text.replace(CONTROL_CHARS, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
 function formatTimestamp(ts?: string): string {
   if (!ts) return chalk.gray('--:--:--');
   const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return chalk.gray(ts.substring(0, 12));
+  if (Number.isNaN(date.getTime())) return chalk.gray(sanitizeLogText(ts.substring(0, 12)));
   return chalk.gray(
     date.toLocaleTimeString('en-US', {
       hour12: false,
@@ -104,7 +112,7 @@ function formatExtra(extra: Record<string, unknown>, indent: string): string {
     const formatted = typeof value === 'object'
       ? JSON.stringify(value, null, 2).split('\n').join(`\n${indent}  `)
       : String(value);
-    return `${indent}${chalk.gray(`${key}:`)} ${chalk.white(formatted)}`;
+    return `${indent}${chalk.gray(`${sanitizeLogText(key)}:`)} ${chalk.white(sanitizeLogText(formatted))}`;
   });
 
   return '\n' + lines.join('\n');
@@ -117,9 +125,9 @@ export function formatLog(log: ParsedLog, options: Partial<FormatOptions> = {}):
   if (!log.isJson && opts.compact) {
     const level = formatLevel(log.level);
     const pod = opts.showPodName && log.podName
-      ? getPodColor(log.podName)(shortenPodName(log.podName)) + ' '
+      ? getPodColor(log.podName)(sanitizeLogText(shortenPodName(log.podName))) + ' '
       : '';
-    return `${level} ${pod}${chalk.white(log.message)}`;
+    return `${level} ${pod}${chalk.white(sanitizeLogText(log.message))}`;
   }
 
   const parts: string[] = [];
@@ -135,12 +143,12 @@ export function formatLog(log: ParsedLog, options: Partial<FormatOptions> = {}):
   // Pod name
   if (opts.showPodName && log.podName) {
     const color = getPodColor(log.podName);
-    parts.push(color(`[${shortenPodName(log.podName)}]`.padEnd(25)));
+    parts.push(color(`[${sanitizeLogText(shortenPodName(log.podName))}]`.padEnd(25)));
   }
 
   // Service
   if (opts.showService && log.service) {
-    parts.push(chalk.blueBright(`(${log.service})`));
+    parts.push(chalk.blueBright(`(${sanitizeLogText(log.service)})`));
   }
 
   // Message
@@ -156,36 +164,36 @@ export function formatLog(log: ParsedLog, options: Partial<FormatOptions> = {}):
       ? chalk.yellowBright
       : chalk.white;
 
-  parts.push(msgColor(message));
+  parts.push(msgColor(sanitizeLogText(message)));
 
   let result = parts.join(' ');
 
   // Trace ID
   if (opts.showTraceId && log.traceId) {
-    result += chalk.gray(` [trace:${log.traceId}]`);
+    result += chalk.gray(` [trace:${sanitizeLogText(log.traceId)}]`);
   }
 
   // Env y version
   if (!opts.compact && (log.env || log.version)) {
     const parts: string[] = [];
-    if (log.env) parts.push(`env:${log.env}`);
-    if (log.version) parts.push(`version:${log.version}`);
+    if (log.env) parts.push(`env:${sanitizeLogText(log.env)}`);
+    if (log.version) parts.push(`version:${sanitizeLogText(log.version)}`);
     result += chalk.gray(` [${parts.join(' ')}]`);
   }
 
   // Caller
   if (log.caller && !opts.compact) {
-    result += chalk.gray(` @ ${log.caller}`);
+    result += chalk.gray(` @ ${sanitizeLogText(log.caller)}`);
   }
 
   // Error
   if (log.error && log.error !== log.message) {
-    result += '\n' + chalk.redBright(`  ↳ ${log.error}`);
+    result += '\n' + chalk.redBright(`  ↳ ${sanitizeLogText(log.error)}`);
   }
 
   // Stack trace
   if (log.stackTrace && !opts.compact) {
-    const lines = log.stackTrace.split('\n').map((l) => chalk.red(`    ${l}`));
+    const lines = sanitizeLogText(log.stackTrace).split('\n').map((l) => chalk.red(`    ${l}`));
     result += '\n' + lines.join('\n');
   }
 

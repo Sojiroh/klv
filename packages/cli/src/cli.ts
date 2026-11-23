@@ -15,7 +15,7 @@ import {
   type ParsedLog,
   type WorkloadKind,
 } from '@klv/core';
-import { formatLog, formatLogSeparator, formatStats, type FormatOptions } from './ui/formatter.js';
+import { formatLog, formatLogSeparator, formatStats, sanitizeLogText, type FormatOptions } from './ui/formatter.js';
 import { select, multiSelect, confirm } from './ui/prompts.js';
 
 // dist/cli.js y src/cli.ts viven un nivel por debajo de package.json
@@ -35,6 +35,23 @@ function parseMinLevel(raw: string | undefined): LogLevel | undefined {
     throw new Error(`Nivel inválido: "${raw}". Niveles válidos: ${VALID_LEVELS}`);
   }
   return level;
+}
+
+function parseStrictInt(raw: string, flag: string): number {
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(`Valor inválido para ${flag}: "${raw}". Debe ser un entero`);
+  }
+  const value = Number(raw.trim());
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`Valor inválido para ${flag}: "${raw}". Número demasiado grande`);
+  }
+  return value;
+}
+
+function parsePositiveInt(raw: string, flag: string): number {
+  const value = parseStrictInt(raw, flag);
+  if (value < 1) throw new Error(`Valor inválido para ${flag}: "${raw}". Debe ser mayor o igual que 1`);
+  return value;
 }
 
 const program = new Command();
@@ -178,6 +195,8 @@ program
 
     try {
       const minLevel = parseMinLevel(cmdOpts.level);
+      const tailLines = parseStrictInt(cmdOpts.tail, '--tail');
+      const sinceSeconds = cmdOpts.since === undefined ? undefined : parsePositiveInt(cmdOpts.since, '--since');
       const client = new KubeClient(opts.kubeconfig, opts.context);
 
       let podName = podArg;
@@ -214,8 +233,8 @@ program
         namespace: opts.namespace,
         podName,
         container,
-        tailLines: parseInt(cmdOpts.tail, 10),
-        sinceSeconds: cmdOpts.since ? parseInt(cmdOpts.since, 10) : undefined,
+        tailLines,
+        sinceSeconds,
         previous: cmdOpts.previous,
       });
 
@@ -271,12 +290,12 @@ program
           if (log.isJson) {
             try {
               const obj = JSON.parse(log.raw);
-              console.log(JSON.stringify(obj, null, 2));
+              console.log(sanitizeLogText(JSON.stringify(obj, null, 2)));
             } catch {
-              console.log(log.raw);
+              console.log(sanitizeLogText(log.raw));
             }
           } else {
-            console.log(log.raw);
+            console.log(sanitizeLogText(log.raw));
           }
         });
       } else {
@@ -309,6 +328,7 @@ program
 
     try {
       const minLevel = parseMinLevel(cmdOpts.level);
+      const tailLines = parseStrictInt(cmdOpts.tail, '--tail');
       const client = new KubeClient(opts.kubeconfig, opts.context);
       let podNames: string[] = podArgs || [];
 
@@ -377,13 +397,13 @@ program
       };
 
       for (const podName of podNames) {
-        const cleanup = await client.streamLogs(
+        const stream = await client.streamLogs(
           {
             namespace: opts.namespace,
             podName,
             container: cmdOpts.container,
             follow: true,
-            tailLines: parseInt(cmdOpts.tail, 10),
+            tailLines,
           },
           {
             onLine: (line, pod) => {
@@ -403,7 +423,7 @@ program
             },
           }
         );
-        cleanups.push(cleanup);
+        cleanups.push(stream.stop);
       }
 
       await allDone;
@@ -426,6 +446,7 @@ program
 
     try {
       const minLevel = parseMinLevel(cmdOpts.level);
+      const tailLines = parseStrictInt(cmdOpts.tail, '--tail');
       const client = new KubeClient(opts.kubeconfig, opts.context);
       const pods = await client.getPods(opts.namespace, cmdOpts.label);
 
@@ -444,7 +465,7 @@ program
               namespace: opts.namespace,
               podName: pod.name,
               container,
-              tailLines: parseInt(cmdOpts.tail, 10),
+              tailLines,
             });
 
             if (read.truncated) truncatedTargets++;

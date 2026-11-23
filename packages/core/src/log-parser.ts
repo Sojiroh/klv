@@ -56,56 +56,131 @@ const KNOWN_FIELDS = new Set([
 ]);
 
 // Alias de niveles (texto). Los niveles numéricos (pino/bunyan) se mapean aparte.
-const LEVEL_MAP: Record<string, LogLevel> = {
-  trace: 'TRACE',
-  debug: 'DEBUG',
-  info: 'INFO',
-  information: 'INFO',
-  notice: 'INFO',
-  warn: 'WARN',
-  warning: 'WARN',
-  error: 'ERROR',
-  err: 'ERROR',
-  fatal: 'FATAL',
-  critical: 'FATAL',
-  crit: 'FATAL',
-  alert: 'FATAL',
-  emergency: 'FATAL',
-  emerg: 'FATAL',
-  panic: 'FATAL',
-};
+// Un Map (no un objeto literal) para que claves como `constructor` o `__proto__` no resuelvan a nada.
+const LEVEL_MAP: ReadonlyMap<string, LogLevel> = new Map<string, LogLevel>([
+  ['trace', 'TRACE'],
+  ['debug', 'DEBUG'],
+  ['info', 'INFO'],
+  ['information', 'INFO'],
+  ['notice', 'INFO'],
+  ['warn', 'WARN'],
+  ['warning', 'WARN'],
+  ['error', 'ERROR'],
+  ['err', 'ERROR'],
+  ['fatal', 'FATAL'],
+  ['critical', 'FATAL'],
+  ['crit', 'FATAL'],
+  ['alert', 'FATAL'],
+  ['emergency', 'FATAL'],
+  ['emerg', 'FATAL'],
+  ['panic', 'FATAL'],
+]);
+
+// Nivel de un alias de texto (sin distinguir mayúsculas ni espacios en los extremos); undefined si no lo es.
+export function parseLevelAlias(text: string): LogLevel | undefined {
+  return LEVEL_MAP.get(text.trim().toLowerCase());
+}
+
+// Asigna una clave propia aunque sea `__proto__` (con `obj['__proto__'] = v` se cambiaría el prototipo).
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (key === '__proto__') {
+    Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+  } else {
+    target[key] = value;
+  }
+}
+
+// Contenedor y clave del último valor devuelto por findValue (solo los lee findIdField)
+let foundHolder: object | undefined;
+let foundKey = '';
 
 // Primero la clave plana literal ("log.level"), luego el recorrido anidado. Null/undefined se ignoran.
 function findValue(obj: Record<string, unknown>, candidates: string[]): unknown {
   for (const field of candidates) {
     const flat = obj[field];
-    if (flat !== undefined && flat !== null) return flat;
+    if (flat !== undefined && flat !== null) {
+      foundHolder = obj;
+      foundKey = field;
+      return flat;
+    }
     if (!field.includes('.')) continue;
 
     let current: unknown = obj;
+    let holder: object = obj;
+    let key = field;
     for (const part of field.split('.')) {
       if (current && typeof current === 'object') {
+        holder = current;
+        key = part;
         current = (current as Record<string, unknown>)[part];
       } else {
         current = undefined;
         break;
       }
     }
-    if (current !== undefined && current !== null) return current;
+    if (current !== undefined && current !== null) {
+      foundHolder = holder;
+      foundKey = key;
+      return current;
+    }
   }
   return undefined;
 }
 
+function stringifyValue(value: unknown): string {
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
 function findField(obj: Record<string, unknown>, candidates: string[]): string | undefined {
   const value = findValue(obj, candidates);
+  return value === undefined ? undefined : stringifyValue(value);
+}
+
+const INTEGER_LITERAL_RE = /^-?\d+$/;
+const I64_MIN = -(2n ** 63n);
+const U64_MAX = 2n ** 64n - 1n;
+
+// Dígitos exactos del literal entero (dentro de i64/u64) que `findValue(candidates)` encuentra en `source`.
+// `JSON.parse` lo redondea a un double; el texto original se recupera con `context.source` del reviver
+// (undefined en motores sin ese soporte: el llamador conserva entonces `String(valor)`).
+function exactIntegerLiteral(source: string, candidates: string[]): string | undefined {
+  const literals = new Map<object, Map<string, string>>();
+  let root: unknown;
+  try {
+    root = JSON.parse(source, function (this: object, key: string, value: unknown, context?: { source?: string }) {
+      if (typeof value === 'number' && context?.source !== undefined && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+        let keys = literals.get(this);
+        if (!keys) literals.set(this, (keys = new Map()));
+        keys.set(key, context.source);
+      }
+      return value;
+    });
+  } catch {
+    return undefined;
+  }
+  if (typeof root !== 'object' || root === null || Array.isArray(root)) return undefined;
+  if (findValue(root as Record<string, unknown>, candidates) === undefined || foundHolder === undefined) return undefined;
+  const literal = literals.get(foundHolder)?.get(foundKey);
+  if (literal === undefined || !INTEGER_LITERAL_RE.test(literal)) return undefined;
+  const n = BigInt(literal);
+  return n >= I64_MIN && n <= U64_MAX ? literal : undefined;
+}
+
+// Como findField, pero un entero JSON fuera del rango seguro de double (ids de traza de 64 bits) conserva sus dígitos exactos.
+function findIdField(obj: Record<string, unknown>, candidates: string[], source: string): string | undefined {
+  const value = findValue(obj, candidates);
   if (value === undefined) return undefined;
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  if (typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    const exact = exactIntegerLiteral(source, candidates);
+    if (exact !== undefined) return exact;
+  }
+  return stringifyValue(value);
 }
 
 export function parseLevel(raw: unknown): LogLevel {
   if (typeof raw === 'string') {
     const text = raw.trim();
-    return /^\d+$/.test(text) ? parseLevel(Number(text)) : (LEVEL_MAP[text.toLowerCase()] ?? 'UNKNOWN');
+    return /^\d+$/.test(text) ? parseLevel(Number(text)) : (parseLevelAlias(text) ?? 'UNKNOWN');
   }
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 'UNKNOWN';
   if (raw >= 60) return 'FATAL';
@@ -120,7 +195,7 @@ export function parseLevel(raw: unknown): LogLevel {
 // `status` (atributo reservado de Datadog) solo cuenta como nivel si es texto; numérico = código HTTP.
 function levelFromStatus(record: Record<string, unknown>): LogLevel {
   const status = record.status;
-  return typeof status === 'string' ? (LEVEL_MAP[status.trim().toLowerCase()] ?? 'UNKNOWN') : 'UNKNOWN';
+  return typeof status === 'string' ? (parseLevelAlias(status) ?? 'UNKNOWN') : 'UNKNOWN';
 }
 
 function detectLevelFromText(text: string): LogLevel {
@@ -141,7 +216,7 @@ function detectLevelFromText(text: string): LogLevel {
 // Epochs numéricos (s, ms, µs, ns) a ISO-8601 UTC; cualquier otro valor se conserva tal cual.
 function normalizeTimestamp(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  const original = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const original = stringifyValue(value);
   const isEpoch = typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value));
   if (!isEpoch) return original;
 
@@ -213,13 +288,13 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
     if (key === 'error' && errorObj) {
       const rest: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(errorObj)) {
-        if (!ERROR_OBJECT_HOISTED.includes(k)) rest[k] = v;
+        if (!ERROR_OBJECT_HOISTED.includes(k)) setOwn(rest, k, v);
       }
-      if (Object.keys(rest).length > 0) extra.error = rest;
+      if (Object.keys(rest).length > 0) setOwn(extra, 'error', rest);
       continue;
     }
     if (!KNOWN_FIELDS.has(key) && value !== undefined && value !== null) {
-      extra[key] = value;
+      setOwn(extra, key, value);
     }
   }
 
@@ -228,10 +303,10 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
   if (typeof dd === 'object' && dd !== null && !Array.isArray(dd)) {
     const rest: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dd)) {
-      if (!DD_TAGS.includes(key)) rest[key] = value;
+      if (!DD_TAGS.includes(key)) setOwn(rest, key, value);
     }
     if (Object.keys(rest).length === 0) delete extra.dd;
-    else extra.dd = rest;
+    else setOwn(extra, 'dd', rest);
   }
 
   return {
@@ -244,8 +319,8 @@ export function parseLogLine(line: string, podName?: string): ParsedLog {
     service: findField(record, SERVICE_FIELDS),
     env: findField(record, ENV_FIELDS),
     version: findField(record, VERSION_FIELDS),
-    traceId: findField(record, TRACE_FIELDS),
-    spanId: findField(record, SPAN_FIELDS),
+    traceId: findIdField(record, TRACE_FIELDS, jsonStr),
+    spanId: findIdField(record, SPAN_FIELDS, jsonStr),
     caller: findField(record, CALLER_FIELDS),
     error: findField(record, errorObj ? ERROR_FIELDS.filter((f) => f !== 'error') : ERROR_FIELDS),
     stackTrace: findField(record, STACK_FIELDS),

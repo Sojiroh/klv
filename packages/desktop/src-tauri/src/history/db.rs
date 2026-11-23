@@ -92,6 +92,9 @@ pub struct NewRow {
     pub pod: String,
     pub container: String,
     pub ts_us: i64,
+    /// `false` = `ts_us` es la hora de llegada (la línea no traía un prefijo de kubelet válido):
+    /// esas filas no avanzan la posición de reanudación del contenedor (`streams`).
+    pub from_kubelet: bool,
     /// Timestamp de kubelet original (o el de llegada si la línea no lo traía).
     pub k8s_timestamp: String,
     pub log: ParsedLog,
@@ -281,7 +284,7 @@ impl Store {
         }
 
         let mut latest: HashMap<(&str, &str, &str, &str), i64> = HashMap::new();
-        for row in rows {
+        for row in rows.iter().filter(|row| row.from_kubelet) {
             let key = (
                 row.context.as_str(),
                 row.namespace.as_str(),
@@ -356,9 +359,14 @@ impl Store {
         })
     }
 
-    /// Segmentos Parquet + archivo DuckDB + su WAL.
+    /// Bytes de los segmentos Parquet registrados (lo único que limita la retención por tamaño).
+    fn segments_bytes(conn: &Connection) -> DbResult<i64> {
+        query_i64(conn, "SELECT CAST(coalesce(sum(bytes), 0) AS BIGINT) FROM segments")
+    }
+
+    /// Segmentos Parquet + archivo DuckDB + su WAL (tamaño real que se muestra en las estadísticas).
     fn size_bytes(&self, conn: &Connection) -> DbResult<i64> {
-        let segments = query_i64(conn, "SELECT CAST(coalesce(sum(bytes), 0) AS BIGINT) FROM segments")?;
+        let segments = Self::segments_bytes(conn)?;
         let mut wal = self.db_path.clone().into_os_string();
         wal.push(".wal");
         let file_len = |path: &Path| fs::metadata(path).map_or(0, |m| m.len() as i64);
@@ -552,7 +560,8 @@ impl Store {
             .map_err(db_err)?;
 
         let limit = retention.max_size_mb.saturating_mul(MB);
-        while self.size_bytes(&reader)? > limit {
+        // El límite aplica solo a los segmentos Parquet; la base de datos y el WAL no se cuentan aquí
+        while Self::segments_bytes(&reader)? > limit {
             let oldest = segment_files(
                 &reader,
                 "SELECT id, file FROM segments ORDER BY bucket_us, id LIMIT 1",

@@ -2,13 +2,13 @@
 //! `current ∪ segmentos Parquet`, prefiltro SQL superconjunto opcional y filtro exacto con
 //! `matches_query`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use chrono::DateTime;
 use duckdb::types::Value;
 use duckdb::{params_from_iter, Connection};
 
 use super::db::{db_err, level_str, sql_quote, DbResult, COLUMNS};
+use super::time::parse_rfc3339_micros;
 use super::types::{HistoryLog, HistoryQueryRequest, HistoryQueryResponse};
 use crate::error::KlvError;
 use crate::names::{validate_name, NameKind};
@@ -19,6 +19,12 @@ use crate::query::{
 
 const DEFAULT_LIMIT: usize = 1000;
 const MAX_LIMIT: usize = 10_000;
+/// Nombres máximos en los filtros `pods` y `containers`.
+const MAX_FILTER_NAMES: usize = 100;
+/// Profundidad máxima del AST (raíz = 0); igual que `MAX_QUERY_DEPTH` de `@klv/core`.
+const MAX_QUERY_DEPTH: usize = 64;
+/// Mayor entero que un `number` de JS representa sin pérdida (límite de los componentes del cursor).
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 /// Filas candidatas máximas evaluadas por petición.
 const SCAN_BUDGET: usize = 200_000;
 /// Filas máximas por consulta SQL.
@@ -49,15 +55,18 @@ pub struct QueryPlan {
 }
 
 fn parse_time(label: &str, text: &str) -> Result<i64, KlvError> {
-    DateTime::parse_from_rfc3339(text)
-        .map(|d| d.timestamp_micros())
-        .map_err(|_| KlvError::new(format!("Fecha \"{label}\" inválida: \"{text}\"")))
+    parse_rfc3339_micros(text).ok_or_else(|| {
+        KlvError::with_status(400, format!("{label} debe ser una fecha ISO-8601 válida"))
+    })
 }
 
 fn parse_cursor(text: &str) -> Result<(i64, i64), KlvError> {
     text.split_once(':')
-        .and_then(|(ts, id)| Some((ts.parse().ok()?, id.parse().ok()?)))
-        .ok_or_else(|| KlvError::new("Cursor inválido"))
+        .and_then(|(ts, id)| Some((ts.parse::<i64>().ok()?, id.parse::<i64>().ok()?)))
+        .filter(|(ts, id)| {
+            ts.unsigned_abs() <= MAX_SAFE_INTEGER && id.unsigned_abs() <= MAX_SAFE_INTEGER
+        })
+        .ok_or_else(|| KlvError::with_status(400, "before: cursor inválido"))
 }
 
 fn format_cursor((ts, id): (i64, i64)) -> String {
@@ -65,44 +74,101 @@ fn format_cursor((ts, id): (i64, i64)) -> String {
 }
 
 fn validated_names(
+    label: &str,
     kind: NameKind,
     names: Option<Vec<String>>,
 ) -> Result<Vec<String>, KlvError> {
     let names = names.unwrap_or_default();
+    if names.len() > MAX_FILTER_NAMES {
+        return Err(KlvError::with_status(
+            400,
+            format!("{label} debe ser un arreglo de hasta {MAX_FILTER_NAMES} nombres"),
+        ));
+    }
     for name in &names {
         validate_name(kind, name)?;
     }
     Ok(names)
 }
 
+/// Mismas reglas que `validateAst` de `history-query.ts`: `and`/`or` con al menos 2 hijos,
+/// profundidad <= `MAX_QUERY_DEPTH`, atributos con ruta no vacía y números finitos.
+fn valid_ast(node: &QueryNode, depth: usize) -> bool {
+    if depth > MAX_QUERY_DEPTH {
+        return false;
+    }
+    match node {
+        QueryNode::And { children } | QueryNode::Or { children } => {
+            children.len() >= 2 && children.iter().all(|child| valid_ast(child, depth + 1))
+        }
+        QueryNode::Not { child } => valid_ast(child, depth + 1),
+        QueryNode::Text { .. } => true,
+        QueryNode::Field { field, test } => {
+            let valid_field = match field {
+                QueryField::Reserved { .. } => true,
+                QueryField::Attr { path } => !path.is_empty(),
+            };
+            let finite = |value: &CompareValue| match value {
+                CompareValue::Number(number) => number.is_finite(),
+                CompareValue::Text(_) => true,
+            };
+            valid_field
+                && match test {
+                    FieldTest::Eq { .. } | FieldTest::Exists => true,
+                    FieldTest::Gt { value }
+                    | FieldTest::Gte { value }
+                    | FieldTest::Lt { value }
+                    | FieldTest::Lte { value } => finite(value),
+                    FieldTest::Range { min, max } => min.is_finite() && max.is_finite(),
+                }
+        }
+    }
+}
+
 impl QueryPlan {
+    /// Valida con las mismas reglas y mensajes que `validateRequest` de `history-query.ts`
+    /// (todos los errores son 400).
     pub fn new(request: HistoryQueryRequest) -> Result<Self, KlvError> {
+        if request.context.as_deref() == Some("") {
+            return Err(KlvError::with_status(400, "context debe ser un string no vacío"));
+        }
         if let Some(namespace) = &request.namespace {
             validate_name(NameKind::Namespace, namespace)?;
         }
-        let pods = validated_names(NameKind::Pod, request.pods)?;
-        let containers = validated_names(NameKind::Container, request.containers)?;
-
         let limit = match request.limit {
             None => DEFAULT_LIMIT,
             Some(limit) => usize::try_from(limit)
                 .ok()
                 .filter(|l| (1..=MAX_LIMIT).contains(l))
                 .ok_or_else(|| {
-                    KlvError::new(format!("limit inválido: debe estar entre 1 y {MAX_LIMIT}"))
+                    KlvError::with_status(
+                        400,
+                        format!("limit debe ser un entero entre 1 y {MAX_LIMIT}"),
+                    )
                 })?,
         };
+        let pods = validated_names("pods", NameKind::Pod, request.pods)?;
+        let containers = validated_names("containers", NameKind::Container, request.containers)?;
+        let from_us = request.from.as_deref().map(|t| parse_time("from", t)).transpose()?;
+        let to_us = request.to.as_deref().map(|t| parse_time("to", t)).transpose()?;
+        if request.query.as_ref().is_some_and(|query| !valid_ast(query, 0)) {
+            return Err(KlvError::with_status(
+                400,
+                "query: el AST de la consulta no es válido",
+            ));
+        }
+        let before = request.before.as_deref().map(parse_cursor).transpose()?;
 
         Ok(Self {
             context: request.context,
             namespace: request.namespace,
             pods,
             containers,
-            from_us: request.from.as_deref().map(|t| parse_time("from", t)).transpose()?,
-            to_us: request.to.as_deref().map(|t| parse_time("to", t)).transpose()?,
+            from_us,
+            to_us,
             query: request.query,
             limit,
-            before: request.before.as_deref().map(parse_cursor).transpose()?,
+            before,
         })
     }
 }
@@ -288,21 +354,7 @@ fn load_chunks(conn: &Connection, plan: &QueryPlan) -> DbResult<Vec<Chunk>> {
     }
     sql.push_str(" ORDER BY bucket_us DESC, id DESC");
 
-    let segments = {
-        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-        let segments = stmt
-            .query_map([], |r| {
-                Ok(Segment {
-                    bucket_us: r.get(0)?,
-                    file: r.get(1)?,
-                    bytes: r.get(2)?,
-                })
-            })
-            .map_err(db_err)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db_err)?;
-        segments
-    };
+    let segments = read_segments(conn, &sql)?;
 
     let mut groups: Vec<Vec<Segment>> = Vec::new();
     let mut bytes = 0i64;
@@ -340,15 +392,71 @@ fn load_chunks(conn: &Connection, plan: &QueryPlan) -> DbResult<Vec<Chunk>> {
         .collect())
 }
 
+fn read_segments(conn: &Connection, sql: &str) -> DbResult<Vec<Segment>> {
+    let mut stmt = conn.prepare(sql).map_err(db_err)?;
+    let segments = stmt
+        .query_map([], |r| {
+            Ok(Segment {
+                bucket_us: r.get(0)?,
+                file: r.get(1)?,
+                bytes: r.get(2)?,
+            })
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(segments)
+}
+
+/// Segmentos cuyo cubo cae en el rango `[start, end)` de un chunk, releídos de la instantánea actual.
+fn list_chunk_segments(conn: &Connection, chunk: &Chunk) -> DbResult<Vec<Segment>> {
+    let mut sql = String::from("SELECT bucket_us, file, bytes FROM segments WHERE 1 = 1");
+    if let Some(start) = chunk.start {
+        sql.push_str(&format!(" AND bucket_us >= {start}"));
+    }
+    if let Some(end) = chunk.end {
+        sql.push_str(&format!(" AND bucket_us < {end}"));
+    }
+    sql.push_str(" ORDER BY bucket_us DESC, id DESC");
+    read_segments(conn, &sql)
+}
+
 // --- Ejecución ---
 
 /// SQL (sin cursor ni límite) y argumentos de un chunk.
 struct ChunkQuery {
     sql: String,
     args: Vec<Value>,
+    /// Archivos Parquet que lee la consulta.
+    files: Vec<PathBuf>,
 }
 
-fn build_chunk_query(plan: &QueryPlan, chunk: &Chunk, segments_dir: &Path) -> ChunkQuery {
+/// Archivos de `candidates` que siguen en disco (la retención puede borrarlos mientras se consulta).
+fn existing_files(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    candidates.into_iter().filter(|path| path.exists()).collect()
+}
+
+/// Consulta de un chunk. Con `refreshed` (tras reiniciar la instantánea) sus segmentos se releen de
+/// la base de datos en lugar de usar los listados al empezar.
+fn open_chunk(
+    conn: &Connection,
+    plan: &QueryPlan,
+    chunk: &Chunk,
+    segments_dir: &Path,
+    refreshed: bool,
+) -> DbResult<ChunkQuery> {
+    let listed;
+    let segments = if refreshed {
+        listed = list_chunk_segments(conn, chunk)?;
+        &listed
+    } else {
+        &chunk.segments
+    };
+    let candidates = segments.iter().map(|s| segments_dir.join(&s.file)).collect();
+    Ok(build_chunk_query(plan, chunk, existing_files(candidates)))
+}
+
+fn build_chunk_query(plan: &QueryPlan, chunk: &Chunk, files: Vec<PathBuf>) -> ChunkQuery {
     let mut source = format!("SELECT {COLUMNS} FROM current WHERE 1 = 1");
     if let Some(start) = chunk.start {
         source.push_str(&format!(" AND ts_us >= {start}"));
@@ -356,18 +464,14 @@ fn build_chunk_query(plan: &QueryPlan, chunk: &Chunk, segments_dir: &Path) -> Ch
     if let Some(end) = chunk.end {
         source.push_str(&format!(" AND ts_us < {end}"));
     }
-    // Un archivo borrado por la retención mientras se consulta se omite.
-    let files: Vec<String> = chunk
-        .segments
+    let quoted: Vec<String> = files
         .iter()
-        .map(|s| segments_dir.join(&s.file))
-        .filter(|path| path.exists())
         .map(|path| sql_quote(&path.to_string_lossy()))
         .collect();
-    if !files.is_empty() {
+    if !quoted.is_empty() {
         source.push_str(&format!(
             " UNION ALL SELECT {COLUMNS} FROM read_parquet([{}])",
-            files.join(", ")
+            quoted.join(", ")
         ));
     }
 
@@ -404,7 +508,7 @@ fn build_chunk_query(plan: &QueryPlan, chunk: &Chunk, segments_dir: &Path) -> Ch
         sql.push_str(&format!(" AND ({pre_sql})"));
         args.extend(pre_args);
     }
-    ChunkQuery { sql, args }
+    ChunkQuery { sql, args, files }
 }
 
 /// Fila mínima para reconstruir el `HistoryLog`: el resto sale de reparsear `raw`.
@@ -473,7 +577,9 @@ fn scan(
 ) -> DbResult<HistoryQueryResponse> {
     let chunks = load_chunks(conn, plan)?;
     let mut chunk_index = 0;
-    let mut query = build_chunk_query(plan, &chunks[chunk_index], segments_dir);
+    // Tras reiniciar la instantánea, los segmentos de cada chunk se releen de la base de datos.
+    let mut refreshed = false;
+    let mut query = open_chunk(conn, plan, &chunks[chunk_index], segments_dir, refreshed)?;
 
     let mut position = plan.before.unwrap_or((i64::MAX, i64::MAX));
     let mut page_size = plan.limit.clamp(100, MAX_PAGE);
@@ -484,7 +590,27 @@ fn scan(
 
     'scan: loop {
         let size = page_size.min(SCAN_BUDGET - scanned);
-        let rows = fetch_page(conn, &query, position, size)?;
+        // Si la consulta falla porque la retención borró un segmento a mitad de camino, se
+        // reconstruye sin los que desaparecieron y se reintenta mientras el conjunto se reduzca;
+        // si no falta ninguno, se propaga el error.
+        let rows = loop {
+            match fetch_page(conn, &query, position, size) {
+                Ok(rows) => break rows,
+                Err(e) => {
+                    let remaining = existing_files(query.files.clone());
+                    if remaining.len() == query.files.len() {
+                        return Err(e);
+                    }
+                    // El fallo puede haber invalidado la transacción: instantánea nueva y segmentos
+                    // del chunk releídos (un rollover intermedio pudo mover filas de `current` a
+                    // un segmento que no estaba listado).
+                    let _ = conn.execute_batch("ROLLBACK");
+                    conn.execute_batch("BEGIN TRANSACTION").map_err(db_err)?;
+                    refreshed = true;
+                    query = open_chunk(conn, plan, &chunks[chunk_index], segments_dir, refreshed)?;
+                }
+            }
+        };
         let count = rows.len();
 
         for (i, row) in rows.into_iter().enumerate() {
@@ -515,7 +641,7 @@ fn scan(
             if chunk_index >= chunks.len() {
                 break;
             }
-            query = build_chunk_query(plan, &chunks[chunk_index], segments_dir);
+            query = open_chunk(conn, plan, &chunks[chunk_index], segments_dir, refreshed)?;
         }
         if scanned >= SCAN_BUDGET {
             truncated = true;

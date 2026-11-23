@@ -57,14 +57,19 @@ function stringify(value: unknown): string {
   return String(value);
 }
 
-/** Same resolution as the query language: flat key `extra["a.b"]` first, then the nested walk. */
+/** Own property of `object`, or undefined: attribute names such as `constructor` must not reach inherited members. */
+function ownValue(object: object, key: string): unknown {
+  return Object.hasOwn(object, key) ? (object as Record<string, unknown>)[key] : undefined;
+}
+
+/** Same resolution as the query language: flat key `extra["a.b"]` first, then the nested walk (own keys only). */
 function attributeValue(extra: Record<string, unknown>, path: string): unknown {
-  const flat = extra[path];
+  const flat = ownValue(extra, path);
   if (flat !== undefined && flat !== null) return flat;
   let current: unknown = extra;
   for (const segment of path.split('.')) {
     if (current === null || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[segment];
+    current = ownValue(current, segment);
   }
   return current;
 }

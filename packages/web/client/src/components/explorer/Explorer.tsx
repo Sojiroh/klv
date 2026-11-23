@@ -1,11 +1,13 @@
-import { useCallback, useDeferredValue, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type FocusEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAggregate } from '../../hooks/useAggregate';
 import { usePersistentState } from '../../hooks/usePersistentState';
 import type { ExplorerParams } from '../../hooks/useExplorerParams';
-import { computeFacets } from '../../lib/facets';
-import { buildHistogram } from '../../lib/histogram';
+import { facetsJob, type Facet } from '../../lib/facets';
+import { histogramJob } from '../../lib/histogram';
 import { highlightPattern as highlightPatternOf } from '../../lib/highlight';
-import { computePatterns, messageSignature } from '../../lib/patterns';
+import { drain } from '../../lib/job';
+import { messageSignature, patternsJob, type PatternSummary } from '../../lib/patterns';
 import { fieldClause, parseQuery, toggleClause } from '../../lib/query';
 import { resolveRange } from '../../lib/time';
 import type { ColumnId } from '../../lib/columns';
@@ -24,10 +26,13 @@ import ToolbarToggle from './ToolbarToggle';
 import SavedViews from './SavedViews';
 import { withColumn, withoutColumn } from './clauses';
 import { FilterIcon, XIcon } from './icons';
-import { filterPattern, filterQuery, filterWindow, timeSpan } from './pipeline';
+import { filterPattern, filterQuery, filterWindow } from './pipeline';
 
 const TABLE_HEIGHT = 'max(320px, calc(100vh - 440px))';
 const GROUP_BY_FIELDS: ColumnId[] = ['level', 'service', 'env', 'version', 'pod', 'container', 'namespace'];
+const NO_FACETS: Facet[] = [];
+const NO_PATTERNS: PatternSummary = { patterns: [], total: 0 };
+const EMPTY_HISTOGRAM = drain(histogramJob([], { range: null }));
 
 interface Props {
   params: ExplorerParams;
@@ -74,6 +79,7 @@ export default function Explorer({
   const [contextSelected, setContextSelected] = useState<ParsedLog | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [facetsOpen, setFacetsOpen] = usePersistentState('klv.explorer.facets', true);
+  const [controlsFocused, setControlsFocused] = useState(false);
 
   const { context, namespace, container, previous } = scope;
   const contextScope = useMemo(() => ({ context, namespace, container, previous }), [context, namespace, container, previous]);
@@ -90,18 +96,19 @@ export default function Explorer({
   const queried = useMemo(() => (source === 'history' ? windowed : filterQuery(windowed, ast)), [source, windowed, ast]);
   const shown = useMemo(() => filterPattern(queried, pattern), [queried, pattern]);
 
-  // Facets, patterns and the histogram are the expensive parts: let a fast-growing live buffer render first.
-  const analysed = useDeferredValue(queried);
-  const analysedShown = useDeferredValue(shown);
+  // Facets, patterns and the histogram are the expensive parts: large buffers are aggregated in slices, a few
+  // seconds apart (see `useAggregate`), so a fast-growing live buffer never blocks the table or the input.
+  // Facets only feed the panel, the query suggestions, the column picker and the group-by list: they are
+  // computed while the panel is open or the controls have focus.
+  const facetsWanted = facetsOpen || controlsFocused;
+  const facets = useAggregate(queried, facetsJob, NO_FACETS, facetsWanted);
+  const { patterns, total: patternsTotal } = useAggregate(queried, patternsJob, NO_PATTERNS, view === 'patterns');
 
-  const facets = useMemo(() => computeFacets(analysed), [analysed]);
-  const patterns = useMemo(() => (view === 'patterns' ? computePatterns(analysed) : []), [view, analysed]);
-
-  const histogram = useMemo(() => {
-    const span = timeWindow ?? timeSpan(analysedShown);
-    const bounds = span ? { from: span.from, to: Math.max(span.to, span.from + 1000) } : { from: 0, to: 1000 };
-    return buildHistogram(analysedShown, { ...bounds, groupBy });
-  }, [timeWindow, analysedShown, groupBy]);
+  const histogramFor = useCallback(
+    (rows: ParsedLog[]) => histogramJob(rows, { range: timeWindow, groupBy }),
+    [timeWindow, groupBy],
+  );
+  const histogram = useAggregate(shown, histogramFor, EMPTY_HISTOGRAM);
 
   const applyClause = useCallback(
     (clause: string, mode: 'include' | 'exclude') => setQuery(toggleClause(query, clause, mode)),
@@ -179,7 +186,13 @@ export default function Explorer({
 
   return (
     <>
-      <div className="space-y-3">
+      <div
+        className="space-y-3"
+        onFocus={(e) => setControlsFocused(!(e.target as HTMLElement).closest('[data-explorer-results]'))}
+        onBlur={(e: FocusEvent<HTMLElement>) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) setControlsFocused(false);
+        }}
+      >
         {/* Query + range */}
         <div className="flex flex-wrap items-start gap-3">
           <QueryBar value={query} onApply={setQuery} facets={facets} />
@@ -267,7 +280,7 @@ export default function Explorer({
         {notices}
 
         {/* Results */}
-        <div className="flex items-start gap-4">
+        <div className="flex items-start gap-4" data-explorer-results="">
           {facetsOpen && (
             <aside className="w-60 shrink-0 hidden md:block">
               <FacetsPanel facets={facets} query={query} maxHeight={maxHeight} onToggle={applyClause} />
@@ -277,7 +290,7 @@ export default function Explorer({
             {view === 'patterns' ? (
               <PatternsTable
                 patterns={patterns}
-                total={analysed.length}
+                total={patternsTotal}
                 active={pattern}
                 maxHeight={maxHeight}
                 onSelect={(id) => params.update({ pattern: id, view: id ? null : 'patterns' })}

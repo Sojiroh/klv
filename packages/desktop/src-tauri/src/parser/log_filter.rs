@@ -1,12 +1,15 @@
 use crate::parser::log_parser::{level_priority, LogLevel, ParsedLog};
+use crate::query::js_json_object;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LogFilter {
     pub level: Option<LogLevel>,
     pub min_level: Option<LogLevel>,
     pub search: Option<String>,
     pub trace_id: Option<String>,
     pub service: Option<String>,
+    /// Descarta los logs cuyo `message` contiene alguno (subcadena, distingue mayúsculas).
+    pub exclude_patterns: Option<Vec<String>>,
 }
 
 pub fn matches_filter(log: &ParsedLog, filter: &LogFilter) -> bool {
@@ -29,7 +32,7 @@ pub fn matches_filter(log: &ParsedLog, filter: &LogFilter) -> bool {
             log.message,
             log.error.as_deref().unwrap_or(""),
             log.service.as_deref().unwrap_or(""),
-            serde_json::to_string(&log.extra).unwrap_or_default()
+            js_json_object(&log.extra)
         )
         .to_lowercase();
         if !searchable.contains(&term) {
@@ -45,6 +48,12 @@ pub fn matches_filter(log: &ParsedLog, filter: &LogFilter) -> bool {
 
     if let Some(ref service) = filter.service {
         if log.service.as_deref() != Some(service) {
+            return false;
+        }
+    }
+
+    if let Some(ref patterns) = filter.exclude_patterns {
+        if patterns.iter().any(|pattern| log.message.contains(pattern.as_str())) {
             return false;
         }
     }

@@ -5,6 +5,7 @@ mod db;
 mod legacy;
 mod search;
 mod service;
+mod time;
 pub mod types;
 mod writer;
 

@@ -5,6 +5,8 @@ interface ApiResult<T> {
   url: string;
   data: T | null;
   error: string | null;
+  /** Responses (successful or failed) received for `url` so far. */
+  settled: number;
 }
 
 export function useApi<T>(url: string | null) {
@@ -17,7 +19,9 @@ export function useApi<T>(url: string | null) {
 
     apiRequest<T>(url, { signal: controller.signal })
       .then((data) => {
-        if (!controller.signal.aborted) setResult({ url, data, error: null });
+        if (!controller.signal.aborted) {
+          setResult((prev) => ({ url, data, error: null, settled: (prev?.url === url ? prev.settled : 0) + 1 }));
+        }
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
@@ -26,6 +30,7 @@ export function useApi<T>(url: string | null) {
           url,
           data: prev?.url === url ? prev.data : null,
           error: err instanceof Error ? err.message : String(err),
+          settled: (prev?.url === url ? prev.settled : 0) + 1,
         }));
       });
 
@@ -41,6 +46,8 @@ export function useApi<T>(url: string | null) {
     data: current?.data ?? null,
     loading: url !== null && current === null,
     error: current?.error ?? null,
+    /** Changes after every response, including failed ones, even when `data` keeps its reference. */
+    settled: current?.settled ?? 0,
     reload,
   };
 }

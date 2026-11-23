@@ -9,8 +9,9 @@ use serde_json::json;
 use tauri::{command, State};
 
 use crate::commands::pods::get_age;
-use crate::error::{kube_error_message, KlvError};
+use crate::error::KlvError;
 use crate::names::{validate_name, NameKind};
+use crate::query::string_form;
 use crate::state::AppState;
 
 /// Misma anotación que `kubectl rollout restart` y Lens.
@@ -192,11 +193,10 @@ fn from_daemonset(d: &DaemonSet, namespace: &str) -> WorkloadInfo {
 
 pub async fn list(client: Client, kind: WorkloadKind, namespace: &str) -> Result<Vec<WorkloadInfo>, KlvError> {
     let fail = |e: kube::Error| {
-        KlvError::new(format!(
-            "Error al obtener {}s del namespace \"{namespace}\": {}",
-            kind.label(),
-            kube_error_message(&e)
-        ))
+        KlvError::from_kube(
+            format!("Error al obtener {}s del namespace \"{namespace}\"", kind.label()),
+            &e,
+        )
     };
     let lp = ListParams::default();
     Ok(match kind {
@@ -236,7 +236,7 @@ pub async fn restart(
     name: &str,
 ) -> Result<WorkloadInfo, KlvError> {
     let action = format!("Error al reiniciar el {} \"{name}\"", kind.label());
-    let fail = |e: kube::Error| KlvError::new(format!("{action}: {}", kube_error_message(&e)));
+    let fail = |e: kube::Error| KlvError::from_kube(&action, &e);
 
     let restarted_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let patch = Patch::Strategic(json!({
@@ -252,9 +252,10 @@ pub async fn restart(
             let api: Api<Deployment> = Api::namespaced(client, namespace);
             let deployment = api.get(name).await.map_err(fail)?;
             if deployment.spec.as_ref().and_then(|s| s.paused).unwrap_or(false) {
-                return Err(KlvError::new(format!(
-                    "{action}: está pausado, reanude el rollout primero"
-                )));
+                return Err(KlvError::with_status(
+                    409,
+                    format!("{action}: está pausado, reanude el rollout primero"),
+                ));
             }
             let patched = api.patch(name, &params, &patch).await.map_err(fail)?;
             Ok(from_deployment(&patched, namespace))
@@ -272,25 +273,43 @@ pub async fn restart(
     }
 }
 
+/// `replicas` como entero int32 `>= 0`; `None` si es negativo, fraccionario o no cabe en int32.
+fn parse_replicas(replicas: &serde_json::Number) -> Option<i64> {
+    let value = replicas.as_i64().or_else(|| {
+        replicas
+            .as_f64()
+            .filter(|f| f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0)
+            .map(|f| f as i64)
+    })?;
+    (0..=i64::from(i32::MAX)).contains(&value).then_some(value)
+}
+
 /// Como `kubectl scale`: merge patch de `spec.replicas` en el subrecurso scale. Los daemonsets no se escalan.
 pub async fn scale(
     client: Client,
     kind: WorkloadKind,
     namespace: &str,
     name: &str,
-    replicas: i64,
+    replicas: &serde_json::Number,
 ) -> Result<WorkloadInfo, KlvError> {
     if kind == WorkloadKind::DaemonSet {
-        return Err(KlvError::new(
+        return Err(KlvError::with_status(
+            400,
             "Los daemonsets no se escalan: ejecutan un pod por nodo",
         ));
     }
-    if !(0..=i64::from(i32::MAX)).contains(&replicas) {
-        return Err(KlvError::new(format!("Número de réplicas inválido: {replicas}")));
-    }
+    let Some(replicas) = parse_replicas(replicas) else {
+        return Err(KlvError::with_status(
+            400,
+            format!(
+                "Número de réplicas inválido: {}",
+                string_form(&serde_json::Value::Number(replicas.clone()))
+            ),
+        ));
+    };
 
     let action = format!("Error al escalar el {} \"{name}\"", kind.label());
-    let fail = |e: kube::Error| KlvError::new(format!("{action}: {}", kube_error_message(&e)));
+    let fail = |e: kube::Error| KlvError::from_kube(&action, &e);
     let patch = Patch::Merge(json!({ "spec": { "replicas": replicas } }));
     let params = PatchParams {
         field_manager: Some("klv".into()),
@@ -336,9 +355,16 @@ pub async fn scale_workload(
     kind: WorkloadKind,
     namespace: String,
     name: String,
-    replicas: i64,
+    replicas: Option<serde_json::Value>,
 ) -> Result<WorkloadInfo, KlvError> {
+    // Mismo orden de validación que la API web: primero el cuerpo, luego los nombres
+    let Some(serde_json::Value::Number(replicas)) = replicas else {
+        return Err(KlvError::with_status(
+            400,
+            "El cuerpo debe ser { \"replicas\": <entero >= 0> }",
+        ));
+    };
     validate_name(NameKind::Namespace, &namespace)?;
     validate_name(kind.name_kind(), &name)?;
-    scale(state.get_client().await?, kind, &namespace, &name, replicas).await
+    scale(state.get_client().await?, kind, &namespace, &name, &replicas).await
 }

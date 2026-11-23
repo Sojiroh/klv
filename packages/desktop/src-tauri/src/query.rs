@@ -262,7 +262,7 @@ fn resolve_attr<'a>(extra: &'a Map<String, Value>, path: &str) -> Option<&'a Val
 
 /// Forma textual de un valor JSON como en JS: `String()` para escalares y `JSON.stringify`
 /// para objetos/arrays anidados.
-fn string_form(value: &Value) -> Cow<'_, str> {
+pub fn string_form(value: &Value) -> Cow<'_, str> {
     match value {
         Value::String(s) => Cow::Borrowed(s),
         Value::Null => Cow::Borrowed("null"),
@@ -495,6 +495,20 @@ fn write_js_object(map: &Map<String, Value>, out: &mut String) {
         write_js_json(value, out);
     }
     out.push('}');
+}
+
+/// `JSON.stringify(valor)` de JS.
+pub fn js_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_js_json(value, &mut out);
+    out
+}
+
+/// `JSON.stringify(objeto)` de JS (claves enteras primero y en orden ascendente).
+pub fn js_json_object(map: &Map<String, Value>) -> String {
+    let mut out = String::new();
+    write_js_object(map, &mut out);
+    out
 }
 
 fn write_js_json(value: &Value, out: &mut String) {

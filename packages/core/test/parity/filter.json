@@ -1,0 +1,15 @@
+[
+  {"name":"sin filtros","line":"{\"message\":\"a\"}","filter":{},"matches":true},
+  {"name":"nivel exacto","line":"{\"level\":\"warn\",\"message\":\"a\"}","filter":{"level":"WARN"},"matches":true},
+  {"name":"nivel minimo","line":"{\"level\":\"warn\",\"message\":\"a\"}","filter":{"minLevel":"ERROR"},"matches":false},
+  {"name":"busqueda en extra","line":"{\"message\":\"m\",\"user\":\"Ana\"}","filter":{"search":"\"user\":\"ana\""},"matches":true},
+  {"name":"busqueda: extra con claves enteras ordenadas","line":"{\"message\":\"m\",\"b\":1,\"2\":1,\"1\":2}","filter":{"search":"{\"1\":2,\"2\":1,\"b\":1}"},"matches":true},
+  {"name":"busqueda: floats como JS","line":"{\"message\":\"m\",\"a\":1.0,\"b\":1e-7,\"c\":1e21}","filter":{"search":"{\"a\":1,\"b\":1e-7,\"c\":1e+21}"},"matches":true},
+  {"name":"busqueda: float serializado por Rust no coincide","line":"{\"message\":\"m\",\"a\":1.0}","filter":{"search":"\"a\":1.0"},"matches":false},
+  {"name":"trace exacto","line":"{\"message\":\"m\",\"trace_id\":\"t1\"}","filter":{"traceId":"t1"},"matches":true},
+  {"name":"trace de 64 bits exacto","line":"{\"message\":\"m\",\"trace_id\":1234567890123456789}","filter":{"traceId":"1234567890123456789"},"matches":true},
+  {"name":"excludePatterns descarta por subcadena","line":"{\"message\":\"GET /healthz 200\"}","filter":{"excludePatterns":["/healthz"]},"matches":false},
+  {"name":"excludePatterns distingue mayusculas","line":"{\"message\":\"GET /Healthz 200\"}","filter":{"excludePatterns":["/healthz"]},"matches":true},
+  {"name":"excludePatterns solo mira el mensaje","line":"{\"message\":\"ok\",\"service\":\"healthz\"}","filter":{"excludePatterns":["healthz"]},"matches":true},
+  {"name":"filtros combinados","line":"{\"level\":\"error\",\"message\":\"boom\",\"service\":\"api\"}","filter":{"minLevel":"WARN","search":"boom","service":"api","excludePatterns":["zzz"]},"matches":true}
+]

@@ -36,9 +36,14 @@ npm run dev:desktop         # Tauri dev mode (Vite + native window)
 
 ## Tests
 
-No test framework is configured yet. There are no test files, no jest/vitest config,
-and no `test` scripts in any package.json. If adding tests:
-- Prefer vitest for ESM packages (core, cli)
+Parity tests only. The shared fixtures in `packages/core/test/parity/*.json` (parser, query and filter cases)
+run against both implementations:
+- TypeScript: `npm test -w @klv/core` (vitest, `packages/core/test/parity.test.ts`)
+- Rust: `cargo test` in `packages/desktop/src-tauri` (`src/parser/parity_tests.rs`, same JSON via `include_str!`)
+
+Any change to the parser, the query language/evaluator or `matchesFilter` needs a fixture case, and a fixture
+change must pass on both sides. When adding other tests:
+- Prefer vitest for ESM packages (core, cli); tests live outside `src/` (`packages/<pkg>/test/`)
 - Use @nestjs/testing + jest for web package
 - Run a single test: `npx vitest run path/to/file.test.ts` (or jest equivalent)
 
@@ -140,16 +145,16 @@ All packages: `strict: true`, `esModuleInterop: true`, `skipLibCheck: true`,
 ### Tailwind / Design System
 
 - Light, Datadog-like theme: custom `klv-*` palette in `tailwind.config.js` (lavender-gray `base`, white `surface`, purple `accent`, dark purple `nav`); level/status colors live only in `utils/log-utils.ts` (`levelConfig`, `statusStyles`, `rolloutStyles`). Palette classes on light surfaces use `-600`/`-700` text with `-50` fills and `-200` borders — never the dark-tuned `-400`/`/10` variants
-- Fonts: Syne (display), Outfit (body), JetBrains Mono (mono)
+- Fonts: Syne (display), Outfit (body), JetBrains Mono (mono), bundled locally through `@fontsource-variable/*` (imported in `main.tsx`); no external font requests — the Tauri CSP only allows `'self'`
 - Custom animations: `fade-in`, `slide-up`, `slide-in-right`, `pulse-dot`
 - Noise texture overlay via `.noise-bg` utility class
 - Custom scrollbar styling in `index.css`
 
 ## CI/CD (GitHub Actions)
 
-Desktop builds run automatically via `.github/workflows/build-desktop.yml` using `tauri-apps/tauri-action@v1`.
+Desktop builds run automatically via `.github/workflows/build-desktop.yml` using `tauri-apps/tauri-action@v0`.
 
-**Triggers:** push to `main`, tags `v*`, PRs to `main`, manual (`workflow_dispatch`)
+**Triggers:** push to `master`, tags `v*`, PRs to `master`, manual (`workflow_dispatch`)
 
 | Job | Runner | Artifacts |
 |-----|--------|-----------|
@@ -162,20 +167,27 @@ Desktop builds run automatically via `.github/workflows/build-desktop.yml` using
 - Rust and npm caches are enabled to speed up builds
 - `tauri.conf.json` uses `"targets": "all"` — generates native format per platform automatically
 - The desktop package at `packages/desktop` uses `projectPath` in the action since it's a monorepo
+- `.github/workflows/ci.yml` (push/PR to `master`) builds core, cli and web, type-checks the client and runs the parity tests (`npm test -w @klv/core`, `cargo test`)
 
 ## Project Conventions
 
-- UI text and error messages are in Spanish (this is intentional)
+- Web/desktop UI text is in English; error messages (core, web server, Rust backend), CLI output, code comments in core/server/Rust and the README are in Spanish (this is intentional)
 - The CLI uses emoji icons in output (e.g., `📋`, `📦`, `✖`)
 - The project reads the same kubeconfig as OpenLens (~/.kube/config)
-- WebSocket events use `stream:` prefix (`stream:start`, `stream:stop`, `stream:log`, `stream:error`, `stream:end`); every server event carries the `streamId` sent in `stream:start`, and `stream:log` carries a batch (`{ streamId, logs }`). Tauri events use the same names and payloads
-- The web server binds `127.0.0.1` by default (`HOST`/`PORT` env) and only accepts WebSocket origins from its own host, the Vite dev server, or `KLV_ALLOWED_ORIGINS`
-- Context switches from the Web UI / desktop are in-memory only; only the CLI `use-context` writes `current-context` to the kubeconfig
+- WebSocket events use `stream:` prefix (`stream:start`, `stream:stop`, `stream:log`, `stream:error`, `stream:end`); every server event carries the `streamId` sent in `stream:start`, and `stream:log` carries a batch (`{ streamId, logs }`, at most 500 lines). Tauri events use the same names and payloads. The gateway is WebSocket-only (`transports: ['websocket']`, so every browser handshake carries `Origin`) and applies lossless backpressure: while the engine.io transport is not writable it queues, and at 5000 queued entries it pauses the pod streams (`LogStream.pause()`) until the queue drains
+- The web server binds `127.0.0.1` by default (`HOST`/`PORT` env). Every HTTP request and the Socket.IO handshake go through `request-guard.ts`: `Host` must be in `ALLOWED_HOSTS` and `Origin`, when present, in `ALLOWED_ORIGINS` (`config.ts`: its own host, the Vite dev server, `KLV_ALLOWED_ORIGINS`), otherwise 403. This is the DNS-rebinding/cross-site defence: never register routes or transports that bypass it
+- Context switches from the Web UI / desktop are in-memory only; only the CLI `use-context` writes `current-context` to the kubeconfig. The desktop pins its context at startup (`state.rs`: client and context name live under one lock and change together in `switch_context`, which also stops the streams); never derive the active context from the kubeconfig on disk
 - The web client proxies `/api` and `/socket.io` to localhost:3000 during development
 - Barrel exports from `packages/core/src/index.ts` — always import from `@klv/core`, not deep paths
 - The query language lives once in `packages/core/src/query.ts` (pure, no Node imports). The React client imports it through the `@klv/query` alias (Vite `resolve.alias` + tsconfig `paths`), the web server via `@klv/core`. Queries over kubelet data are evaluated client-side; the history API receives the parsed AST. Rust re-implements the evaluator in `src-tauri/src/query.rs` with identical semantics — keep both in sync
-- The log parser (`log-parser.ts` ↔ `parser/log_parser.rs`) and the query evaluator (`query.ts` ↔ `query.rs`) must stay behaviorally identical between TypeScript and Rust
+- The log parser (`log-parser.ts` ↔ `parser/log_parser.rs`), `matchesFilter` (↔ `parser/log_filter.rs`) and the query evaluator (`query.ts` ↔ `query.rs`) must stay behaviorally identical between TypeScript and Rust; the parity fixtures check it (see Tests). Parsing is own-property safe (keys like `__proto__`/`constructor` are data), `traceId`/`spanId` from JSON integers within i64/u64 keep their exact digits, and every other value turned into text equals JS `String()`/`JSON.stringify` (Rust: `query::string_form`/`js_json`, `serde_json` with `float_roundtrip`)
 - Local history: web `packages/web/src/history/` (`@duckdb/node-api`, Node >= 22.13, data in `KLV_DATA_DIR` or `~/.klv`), desktop `src-tauri/src/history/` (`duckdb` crate pinned to `=1.4.2` because newer versions depend on yanked `zip` releases; app data dir). Same layout in both: `config.json`, `history.duckdb` (current hour + metadata), `segments/*.parquet` (hourly, zstd). Contract: hourly segments, file-level retention, never row deletes on Parquet, SQL prefilter is always a superset of `matchesQuery`. `node:sqlite`/`rusqlite` are used only for the v1 `history.db` config migration. Same API (`/api/history/*` ↔ `history_*` commands); collectors start with the server/app
 - Datadog compatibility: the parsers map the dd-trace log-injection tags `dd.trace_id`, `dd.span_id`, `dd.service`, `dd.env`, `dd.version` (flat dotted keys, nested `dd` object, or `dd_*` underscore form) to `traceId`/`spanId`/`service`/`env`/`version` and strip them from `extra`; Datadog's `status` attribute is a text-only level alias (numeric values are HTTP codes and stay in `extra`). When `error` is an object, its `message`/`stack`/`stack_trace` are hoisted into the error/stack fields and the remainder is kept in `extra.error` (the object is never stringified). The query language accepts `env:`/`version:` and `@dd.*`/`dd.*` aliases of the reserved fields, the `?` single-character wildcard (alongside `*`), and `field:(a OR b)` value groups (OR/AND/NOT inside the parentheses, each value bound to the field). Free text searches only `message`/`error`/`stack` (like Datadog); attributes need `@field:value`. History schema changes must stay compatible in both stores (same columns in `current` and Parquet segments)
 - Collector target filters (`minLevel`, `exclude`) are applied per line after parsing, before enqueue: `minLevel` drops lines below the level but keeps `UNKNOWN`-level lines (stack continuations, plain text); `exclude` drops lines whose `message` contains any pattern as a case-sensitive substring
 - Cluster actions (Lens/OpenLens-style operations) live in `KubeClient` (core) and `src-tauri/src/commands/` (`workloads.rs`, `pods.rs`) and must send equivalent requests and return identical JSON: `restartWorkload` ↔ `restart_workload` (Deployment/StatefulSet/DaemonSet; read and reject paused deployments with 409, then strategic merge patch of `kubectl.kubernetes.io/restartedAt` with `fieldManager=klv`; OnDelete workloads are patched too, like kubectl), `scaleWorkload` ↔ `scale_workload` (merge patch of the `scale` subresource, int32 `>= 0`, DaemonSets rejected with 400), `deletePod` ↔ `delete_pod` (default grace period). `WorkloadInfo` uses the same fields for every kind (DaemonSet counts map to `desired`/`current`/…), and `PodInfo.status` is `Terminating` when `deletionTimestamp` is set. Mutating REST endpoints are either `POST` + `JsonContentTypeGuard` (`packages/web/src/json-content-type.guard.ts`) or `DELETE` (always preflighted), so cross-site forms cannot trigger them; workload routes take the k8s resource name (`deployments`/`statefulsets`/`daemonsets`) through `WorkloadResourcePipe`; the UI confirms inline before acting. Rollout state (`ready`/`progressing`/`notReady`/`failed`/`paused`) is derived only in the client (`lib/rollout.ts`, the per-kind `kubectl rollout status` checks); the backends return raw counts, generations, strategy/partition and conditions
+- `KubeClient.streamLogs` returns a `LogStream` (`stop`/`pause`/`resume`) and never rejects; streamed lines are capped at `MAX_STREAM_LINE_CHARS` (1 MiB; Rust readers cap at the same number of bytes): the truncated line is delivered once and the rest is discarded. `tailLines: 0` means no previous lines (it must reach the apiserver as `tailLines=0`); `tailLines`/`sinceSeconds` are validated in core and in the Rust commands (400)
+- Query language details that must match in both evaluators: wildcards are matched without `RegExp` — text and pattern lowercased (`toLowerCase` ↔ `to_lowercase`) and compared by code point, `*` any run, `?` exactly one code point, anchored for fields and unanchored for free text (`globMatch` ↔ `glob_match`). `status:` addresses the level only with a text level alias (`status:error`, `status:>=warn`; `status:*` is level-exists) and the `status` attribute otherwise (`status:500` ≡ `@status:500`), mirroring `levelFromStatus`. `parseQuery` never throws and rejects ASTs deeper than `MAX_QUERY_DEPTH` (64), the limit the history API also validates
+- History store rules shared by both backends: the retention size limit counts only Parquet segment bytes; a failed batch insert is kept and retried in order (TS caps the queue at 100 000 rows and logs what it drops, Rust applies channel backpressure); followers resume from the last kubelet timestamp plus the number of lines read at it (a floor loaded from the database uses `<=`), and rows stamped with arrival time never advance the resume point; a chunk query whose segment file vanished is rebuilt without it and retried; kubelet prefixes follow `YYYY-MM-DDTHH:MM:SS[.1-9 digits][Z]` (UTC) and `from`/`to` bounds are RFC 3339 with an explicit offset, microsecond precision (`utcMicros` ↔ `history/time.rs`); `history_query` validates exactly like `validateRequest`
+- Rust command errors are `KlvError { message, statusCode? }` with the status the web API returns for the same failure (400 validation, 404, 409, apiserver 4xx as-is, 5xx as 502); use `KlvError::with_status` for validation errors
+- CLI: everything that comes from a log goes through `sanitizeLogText` (`ui/formatter.ts`) before styling, so control characters are printed escaped; numeric options are parsed strictly
+- Client stream/Explorer: aggregates (facets, histogram, patterns) are generator jobs (`lib/job.ts`) run in time slices by `useAggregate` with per-log `WeakMap` caches, and the stream flush interval scales with the buffer size — do not reintroduce per-flush recomputation over the whole buffer. Pause lives in `useStream`: the frozen view is never touched and held lines are capped at the buffer size

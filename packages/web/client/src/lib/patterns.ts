@@ -1,6 +1,7 @@
 import type { QueryableLog } from '@klv/query';
 import type { LogLevel } from '../types';
-import { logTime } from './time';
+import { JOB_CHUNK, type Job } from './job';
+import { cachedTime } from './time';
 
 export interface LogPattern {
   id: string;
@@ -46,22 +47,52 @@ function fnv1a(text: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function logSignature(log: QueryableLog): string {
-  return messageSignature(log.message || log.raw);
+interface PatternKey {
+  signature: string;
+  id: string;
+}
+
+/** Bound on the interned keys: a stream of all-different messages must not grow the table forever. */
+const MAX_INTERNED_KEYS = 20_000;
+
+// Log objects are immutable once loaded: the signature (8 regexes) is computed once per object, and
+// logs sharing a signature share one key object.
+const keyCache = new WeakMap<QueryableLog, PatternKey>();
+const internedKeys = new Map<string, PatternKey>();
+
+function logKey(log: QueryableLog): PatternKey {
+  let key = keyCache.get(log);
+  if (key === undefined) {
+    const signature = messageSignature(log.message || log.raw);
+    key = internedKeys.get(signature);
+    if (key === undefined) {
+      key = { signature, id: fnv1a(signature) };
+      if (internedKeys.size < MAX_INTERNED_KEYS) internedKeys.set(signature, key);
+    }
+    keyCache.set(log, key);
+  }
+  return key;
 }
 
 export function patternId(log: QueryableLog): string {
-  return fnv1a(logSignature(log));
+  return logKey(log).id;
+}
+
+export interface PatternSummary {
+  patterns: LogPattern[];
+  /** Logs the patterns were computed from. */
+  total: number;
 }
 
 /** Groups logs by message signature, most frequent first. Single pass. */
-export function computePatterns(logs: QueryableLog[]): LogPattern[] {
+export function* patternsJob(logs: QueryableLog[]): Job<PatternSummary> {
   const byId = new Map<string, LogPattern>();
 
-  for (const log of logs) {
-    const signature = logSignature(log);
-    const id = fnv1a(signature);
-    const time = logTime(log);
+  for (let i = 0; i < logs.length; i++) {
+    if ((i & (JOB_CHUNK - 1)) === JOB_CHUNK - 1) yield;
+    const log = logs[i];
+    const { signature, id } = logKey(log);
+    const time = cachedTime(log);
 
     let pattern = byId.get(id);
     if (!pattern) {
@@ -76,5 +107,5 @@ export function computePatterns(logs: QueryableLog[]): LogPattern[] {
     }
   }
 
-  return [...byId.values()].sort((a, b) => b.count - a.count);
+  return { patterns: [...byId.values()].sort((a, b) => b.count - a.count), total: logs.length };
 }

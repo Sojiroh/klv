@@ -26,6 +26,19 @@ export function logTime(log: ParsedLog): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+// Log objects are immutable once loaded; caching per object keeps re-filtering a growing live buffer cheap.
+const times = new WeakMap<ParsedLog, number | null>();
+
+/** `logTime` memoised per log object. */
+export function cachedTime(log: ParsedLog): number | null {
+  let time = times.get(log);
+  if (time === undefined) {
+    time = logTime(log);
+    times.set(log, time);
+  }
+  return time;
+}
+
 export function resolveRange(state: TimeRangeState, now: number = Date.now()): { from: number; to: number } {
   if (state.range === 'custom') {
     return { from: state.from ?? now - TIME_RANGES[1].ms, to: state.to ?? now };

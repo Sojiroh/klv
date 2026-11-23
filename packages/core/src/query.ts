@@ -1,5 +1,5 @@
 // Lenguaje de consulta de logs (estilo Datadog). Módulo puro: sin imports de Node, también se empaqueta en el navegador.
-import { LEVEL_PRIORITY, PARSED_FIELD_KEYS, parseLevel } from './log-parser.js';
+import { LEVEL_PRIORITY, PARSED_FIELD_KEYS, parseLevel, parseLevelAlias } from './log-parser.js';
 import type { LogLevel, ParsedLog } from './log-parser.js';
 
 export type ReservedField =
@@ -69,6 +69,11 @@ const RESERVED_FIELDS: Record<string, ReservedField> = {
   error: 'error',
 };
 
+// Profundidad máxima del AST que produce parseQuery (raíz = 0); el prefiltro del historial rechaza los más profundos.
+export const MAX_QUERY_DEPTH = 64;
+// Anidación máxima de paréntesis / NOT / grupos `campo:( … )` que acepta el analizador (acota la recursión)
+const MAX_NESTING = 256;
+
 const KEYWORDS: Record<string, true> = { AND: true, OR: true, NOT: true };
 const NUMBER_RE = /^-?\d+(?:\.\d+)?$/;
 const RANGE_RE = /\[\s*(-?\d+(?:\.\d+)?)\s+TO\s+(-?\d+(?:\.\d+)?)\s*\]/y;
@@ -117,6 +122,20 @@ function isLevelField(field: QueryField): boolean {
   return field.kind === 'reserved' && field.name === 'level';
 }
 
+// `status:` direcciona el nivel solo con un alias de texto (como `levelFromStatus` del parser); cualquier otro
+// valor (códigos HTTP, rangos, comodines, otro texto) es el atributo `@status`.
+function isStatusHead(field: QueryField, name: string): boolean {
+  return isLevelField(field) && name.toLowerCase() === 'status';
+}
+
+function isLevelAlias(value: string): boolean {
+  return value.trim().toLowerCase() === 'unknown' || parseLevelAlias(value) !== undefined;
+}
+
+function statusAttribute(): QueryField {
+  return { kind: 'attr', path: 'status' };
+}
+
 function normalizeLevel(value: string, position: number): LogLevel {
   const isUnknown = value.trim().toLowerCase() === 'unknown';
   const level = isUnknown ? 'UNKNOWN' : parseLevel(value);
@@ -131,6 +150,7 @@ function normalizeLevel(value: string, position: number): LogLevel {
 
 class Lexer {
   private index = 0;
+  private nesting = 0;
   private lookahead: Token | undefined;
 
   constructor(private readonly text: string) {}
@@ -268,8 +288,15 @@ class Lexer {
     throw new ParseError('Comillas sin cerrar', start);
   }
 
+  private enterNesting(position: number): void {
+    if (++this.nesting > MAX_NESTING) {
+      throw new ParseError(`La consulta tiene demasiados niveles de anidación (máximo ${MAX_NESTING})`, position);
+    }
+  }
+
   private parseFieldValue(field: QueryField, name: string, start: number): QueryNode {
     const { text } = this;
+    const status = isStatusHead(field, name);
     const char = text[start];
     if (char === undefined || WHITESPACE_RE.test(char) || char === ')') {
       throw new ParseError(`Falta el valor del campo "${name}"`, start);
@@ -281,11 +308,11 @@ class Lexer {
       const { value, end } = this.readQuoted(start);
       if (value === '') throw new ParseError(`Falta el valor del campo "${name}"`, start);
       this.index = end;
-      return this.eqNode(field, value, false, start);
+      return this.eqNode(field, name, value, false, start);
     }
 
     if (char === '[') {
-      if (isLevelField(field)) {
+      if (isLevelField(field) && !status) {
         throw new ParseError('El campo level no admite rangos; use comparadores como level:>=warn', start);
       }
       RANGE_RE.lastIndex = start;
@@ -295,7 +322,7 @@ class Lexer {
       const max = Number(match[2]);
       if (min > max) throw new ParseError('Rango no válido: el mínimo es mayor que el máximo', start);
       this.index = start + match[0].length;
-      return { type: 'field', field, op: 'range', min, max };
+      return { type: 'field', field: status ? statusAttribute() : field, op: 'range', min, max };
     }
 
     if (char === '>' || char === '<') {
@@ -306,7 +333,8 @@ class Lexer {
       const operand = text.slice(operandStart, end);
       if (operand === '') throw new ParseError('Falta el valor del comparador', start);
       let value: number | string;
-      if (isLevelField(field)) {
+      const levelMode = isLevelField(field) && !(status && !isLevelAlias(operand));
+      if (levelMode) {
         const level = normalizeLevel(operand, start);
         if (level === 'UNKNOWN') throw new ParseError('Comparador no válido para el nivel UNKNOWN', start);
         value = level;
@@ -317,17 +345,20 @@ class Lexer {
         value = Number(operand);
       }
       this.index = end;
-      return { type: 'field', field, op, value };
+      return { type: 'field', field: levelMode || !status ? field : statusAttribute(), op, value };
     }
 
     const end = this.wordEnd(start);
     this.index = end;
     if (text.slice(start, end) === '*') return { type: 'field', field, op: 'exists' };
     const { value, wildcard } = this.unescape(start, end);
-    return this.eqNode(field, value, wildcard, start);
+    return this.eqNode(field, name, value, wildcard, start);
   }
 
-  private eqNode(field: QueryField, value: string, wildcard: boolean, position: number): QueryNode {
+  private eqNode(field: QueryField, name: string, value: string, wildcard: boolean, position: number): QueryNode {
+    if (isStatusHead(field, name) && !isLevelAlias(value)) {
+      return { type: 'field', field: statusAttribute(), op: 'eq', value, wildcard };
+    }
     if (isLevelField(field)) {
       return { type: 'field', field, op: 'eq', value: normalizeLevel(value, position), wildcard: false };
     }
@@ -342,6 +373,7 @@ class Lexer {
   // `campo:( … )`: grupo de valores con la misma precedencia que la consulta (NOT/`-` > AND implícito > OR);
   // cada valor interno se lee con parseFieldValue y queda ligado al mismo campo
   private parseValueGroup(field: QueryField, name: string, open: number): QueryNode {
+    this.enterNesting(open);
     this.index = open + 1;
     this.skipSpaces();
     if (this.text[this.index] === ')') throw new ParseError('Grupo vacío ()', open);
@@ -349,6 +381,7 @@ class Lexer {
     this.skipSpaces();
     if (this.text[this.index] !== ')') throw new ParseError('Paréntesis sin cerrar', open);
     this.index++;
+    this.nesting--;
     return node;
   }
 
@@ -408,21 +441,44 @@ class Lexer {
     }
     if (word === 'NOT') {
       this.index += 3;
-      return { type: 'not', child: this.groupUnary(field, name, open, { label: 'NOT', pos }) };
+      this.enterNesting(pos);
+      const child = this.groupUnary(field, name, open, { label: 'NOT', pos });
+      this.nesting--;
+      return { type: 'not', child };
     }
     if (char === '-') {
       if (pos + 1 >= text.length || WHITESPACE_RE.test(text[pos + 1])) {
         throw new ParseError("Falta el término después de '-'", pos);
       }
       this.index++;
-      return { type: 'not', child: this.groupUnary(field, name, open, { label: '-', pos }) };
+      this.enterNesting(pos);
+      const child = this.groupUnary(field, name, open, { label: '-', pos });
+      this.nesting--;
+      return { type: 'not', child };
     }
     return this.parseFieldValue(field, name, pos);
   }
 }
 
+// Niveles bajo la raíz del AST (una hoja = 0)
+function astDepth(node: QueryNode): number {
+  switch (node.type) {
+    case 'and':
+    case 'or': {
+      let deepest = 0;
+      for (const child of node.children) deepest = Math.max(deepest, astDepth(child) + 1);
+      return deepest;
+    }
+    case 'not':
+      return astDepth(node.child) + 1;
+    default:
+      return 0;
+  }
+}
+
 class Parser {
   private readonly lexer: Lexer;
+  private nesting = 0;
 
   constructor(text: string) {
     this.lexer = new Lexer(text);
@@ -432,7 +488,16 @@ class Parser {
     const node = this.parseOr();
     const token = this.lexer.next();
     if (token.kind === 'rparen') throw new ParseError('Paréntesis de cierre sin abrir', token.pos);
+    if (astDepth(node) > MAX_QUERY_DEPTH) {
+      throw new ParseError(`La consulta es demasiado profunda (máximo ${MAX_QUERY_DEPTH} niveles)`, 0);
+    }
     return node;
+  }
+
+  private enterNesting(position: number): void {
+    if (++this.nesting > MAX_NESTING) {
+      throw new ParseError(`La consulta tiene demasiados niveles de anidación (máximo ${MAX_NESTING})`, position);
+    }
   }
 
   private parseOr(after?: Token): QueryNode {
@@ -465,16 +530,22 @@ class Parser {
     const token = this.lexer.next();
     switch (token.kind) {
       case 'not':
-      case 'neg':
-        return { type: 'not', child: this.parseUnary(token) };
+      case 'neg': {
+        this.enterNesting(token.pos);
+        const child = this.parseUnary(token);
+        this.nesting--;
+        return { type: 'not', child };
+      }
       case 'term':
         return token.node;
       case 'lparen': {
         const following = this.lexer.peek();
         if (following.kind === 'rparen') throw new ParseError('Grupo vacío ()', token.pos);
         if (following.kind === 'eof') throw new ParseError('Paréntesis sin cerrar', token.pos);
+        this.enterNesting(token.pos);
         const inner = this.parseOr();
         if (this.lexer.next().kind !== 'rparen') throw new ParseError('Paréntesis sin cerrar', token.pos);
+        this.nesting--;
         return inner;
       }
       default:
@@ -502,28 +573,65 @@ export function parseQuery(text: string): QueryParseResult {
 // Evaluación
 // ---------------------------------------------------------------------------
 
-const globCache = new WeakMap<QueryNode, RegExp>();
+const STAR = -1;
+const ANY = -2;
+const globCache = new WeakMap<QueryNode, Int32Array>();
 
-// Glob carácter a carácter: una racha de `*` → `.*`, `?` → `.` (un carácter), el resto literal.
-// El indicador `u` hace que `.` consuma un punto de código, igual que el `char` del evaluador Rust.
-function globRegExp(node: QueryNode, glob: string, anchored: boolean): RegExp {
-  let regex = globCache.get(node);
-  if (!regex) {
-    let body = '';
-    let inStar = false;
-    for (const char of glob) {
+// Patrón compilado a puntos de código (en minúsculas): `*` (una racha cuenta como uno) = STAR, `?` = ANY.
+// Se compila una vez por nodo del AST.
+function globPattern(node: QueryNode, glob: string): Int32Array {
+  let pattern = globCache.get(node);
+  if (!pattern) {
+    const codes: number[] = [];
+    for (const char of glob.toLowerCase()) {
       if (char === '*') {
-        if (!inStar) body += '.*';
-        inStar = true;
+        if (codes[codes.length - 1] !== STAR) codes.push(STAR);
+      } else {
+        codes.push(char === '?' ? ANY : char.codePointAt(0) as number);
+      }
+    }
+    pattern = Int32Array.from(codes);
+    globCache.set(node, pattern);
+  }
+  return pattern;
+}
+
+// Glob sobre `text` ya en minúsculas, punto de código a punto de código (igual que `glob_match` de query.rs):
+// `*` = cualquier tramo (también vacío), `?` = exactamente un punto de código. Con `anchored` debe coincidir
+// todo el texto; si no, basta una aparición. Solo recuerda el último `*`, así que cuesta O(texto × patrón)
+// sin asignaciones.
+function globMatch(text: string, pattern: Int32Array, anchored: boolean): boolean {
+  let t = 0;
+  let p = 0;
+  // Último `*`: (patrón tras él, texto desde donde reintentar). Sin anclar hay un `*` implícito al inicio.
+  let starP = anchored ? -1 : 0;
+  let starT = 0;
+  for (;;) {
+    if (p < pattern.length) {
+      const code = pattern[p];
+      if (code === STAR) {
+        p++;
+        starP = p;
+        starT = t;
         continue;
       }
-      inStar = false;
-      body += char === '?' ? '.' : char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (t < text.length) {
+        const textCode = text.codePointAt(t) as number;
+        if (code === ANY || code === textCode) {
+          p++;
+          t += textCode > 0xffff ? 2 : 1;
+          continue;
+        }
+      }
+    } else if (!anchored || t >= text.length) {
+      return true;
     }
-    regex = new RegExp(anchored ? `^${body}$` : body, 'isu');
-    globCache.set(node, regex);
+    // Fallo: el último `*` absorbe un punto de código más del texto y se reintenta
+    if (starP < 0 || starT >= text.length) return false;
+    starT += (text.codePointAt(starT) as number) > 0xffff ? 2 : 1;
+    p = starP;
+    t = starT;
   }
-  return regex;
 }
 
 function resolveAttribute(extra: Record<string, unknown>, path: string): unknown {
@@ -617,8 +725,8 @@ function matchesField(log: QueryableLog, node: Extract<QueryNode, { type: 'field
     case 'eq': {
       const strings = valueStrings(value);
       if (node.wildcard) {
-        const regex = globRegExp(node, node.value, true);
-        return strings.some((s) => regex.test(s));
+        const pattern = globPattern(node, node.value);
+        return strings.some((s) => globMatch(s.toLowerCase(), pattern, true));
       }
       const wanted = node.value.toLowerCase();
       return strings.some((s) => s.toLowerCase() === wanted);
@@ -651,8 +759,8 @@ export function matchesQuery(log: QueryableLog, ast: QueryNode | null): boolean 
         // `\n`. Los atributos se buscan con `@attr:valor` y los reservados con `campo:valor`.
         // El prefiltro SQL del historial (`message/error/stack_trace ILIKE`) depende de este corpus.
         text ??= [log.message, log.error, log.stackTrace].filter(Boolean).join('\n');
-        if (node.wildcard) return globRegExp(node, node.value, false).test(text);
         lowerText ??= text.toLowerCase();
+        if (node.wildcard) return globMatch(lowerText, globPattern(node, node.value), false);
         return lowerText.includes(node.value.toLowerCase());
       case 'field':
         return matchesField(log, node);

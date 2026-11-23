@@ -1,14 +1,35 @@
 use serde::Serialize;
 
+/// Error de un comando. `status_code` replica el código HTTP que devuelve la API web para el mismo fallo
+/// (400 argumentos inválidos, 409 conflicto, el del apiserver en errores de Kubernetes).
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct KlvError {
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
 }
 
 impl KlvError {
     pub fn new(msg: impl Into<String>) -> Self {
         Self {
             message: msg.into(),
+            status_code: None,
+        }
+    }
+
+    pub fn with_status(status: u16, msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            status_code: Some(status),
+        }
+    }
+
+    /// Error de kube con un prefijo de acción: `"{action}: {detalle}"`, con el código del apiserver.
+    pub fn from_kube(action: impl std::fmt::Display, e: &kube::Error) -> Self {
+        Self {
+            message: format!("{action}: {}", kube_error_message(e)),
+            status_code: kube_status(e),
         }
     }
 
@@ -34,9 +55,21 @@ pub fn kube_error_message(e: &kube::Error) -> String {
     }
 }
 
+/// Código de un error del apiserver, como lo expone la API web: 4xx tal cual, 5xx como 502 (bad gateway).
+pub fn kube_status(e: &kube::Error) -> Option<u16> {
+    match e {
+        kube::Error::Api(resp) if (400..500).contains(&resp.code) => Some(resp.code),
+        kube::Error::Api(resp) if resp.code >= 500 => Some(502),
+        _ => None,
+    }
+}
+
 impl From<kube::Error> for KlvError {
     fn from(e: kube::Error) -> Self {
-        Self::new(kube_error_message(&e))
+        Self {
+            message: kube_error_message(&e),
+            status_code: kube_status(&e),
+        }
     }
 }
 

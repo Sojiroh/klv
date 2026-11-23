@@ -11,6 +11,10 @@ import type { HistoryStats, RetentionSettings } from './history.types';
 const BATCH_ROWS = 500;
 const BATCH_INTERVAL_MS = 1000;
 const STATS_TTL_MS = 5000;
+// Tope de la cola en memoria: solo se supera si la base de datos no acepta escrituras durante mucho tiempo;
+// entonces se descartan de golpe las filas más antiguas hasta la marca baja (histéresis) y se registra cuántas
+const MAX_QUEUE_ROWS = 100_000;
+const QUEUE_LOW_MARK = 90_000;
 // Cubo de rollover = hora UTC; las líneas tardías de la hora abierta esperan este margen antes de exportarse
 const HOUR_US = 3_600_000_000;
 const ROLLOVER_GRACE_US = 120_000_000;
@@ -54,6 +58,8 @@ export type Row = Record<string, DuckDBValue>;
 // Consultas de solo lectura sobre una instantánea consistente (ver HistoryStore.read)
 export interface Reader {
   all(sql: string, params?: SqlParam[]): Promise<Row[]>;
+  // Descarta la transacción (una consulta fallida puede haberla invalidado) y abre otra con una instantánea nueva
+  restart(): Promise<void>;
 }
 
 export interface SegmentRef {
@@ -65,6 +71,8 @@ export interface SegmentRef {
 interface PendingRow {
   scope: LogScope;
   tsUs: number;
+  // false = `tsUs` es la hora de llegada (la línea no traía un prefijo de kubelet válido): no avanza el punto de reanudación
+  fromKubelet: boolean;
   k8sTimestamp: string;
   log: ParsedLog;
 }
@@ -84,15 +92,32 @@ export function resolveDataDir(): string {
   return process.env.KLV_DATA_DIR ?? join(homedir(), '.klv');
 }
 
-// Microsegundos desde epoch del prefijo RFC3339 de kubelet (hasta nanosegundos); null si no es válido.
-// Se guardan como entero para no perder precisión (los nanosegundos exceden 2^53).
+// Microsegundos desde epoch de una fecha-hora UTC con `fraction` (dígitos decimales de segundo, truncados a
+// microsegundos) y un desfase en segundos que se resta. Exige fecha de calendario real, hora 0-23, minuto y segundo
+// 0-59 y un resultado entero seguro (|µs| <= 2^53 - 1); null en otro caso. Mismo criterio en Rust (`utc_micros`)
+export function utcMicros(
+  parts: { year: number; month: number; day: number; hour: number; minute: number; second: number },
+  fraction: string,
+  offsetSeconds = 0,
+): number | null {
+  const { year, month, day, hour, minute, second } = parts;
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  const micros = Number(fraction.padEnd(6, '0').slice(0, 6));
+  const seconds = date.getTime() / 1000 + hour * 3600 + minute * 60 + second - offsetSeconds;
+  const total = seconds * 1_000_000 + micros;
+  return Number.isSafeInteger(total) ? total : null;
+}
+
+// Microsegundos desde epoch del prefijo de kubelet `YYYY-MM-DDTHH:MM:SS[.1-9 dígitos][Z]` (siempre UTC); null si no
+// es válido (ver `utcMicros`). Se guardan como entero para no perder precisión (los nanosegundos exceden 2^53).
 export function parseKubeletMicros(timestamp: string): number | null {
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z?$/.exec(timestamp);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z?$/.exec(timestamp);
   if (!match) return null;
-  const seconds = Date.parse(`${match[1]}Z`);
-  if (Number.isNaN(seconds)) return null;
-  const micros = Number((match[2] ?? '').padEnd(6, '0').slice(0, 6));
-  return seconds * 1000 + micros;
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  return utcMicros({ year, month, day, hour, minute, second }, match[7] ?? '');
 }
 
 export function sqlString(value: string): string {
@@ -112,6 +137,14 @@ export class HistoryStore {
   // rollover / prune / clear no se solapan entre sí (sí con ingesta y consultas)
   private readonly maintenanceLock = new Mutex();
   private queue: PendingRow[] = [];
+  // Lote que se está insertando ahora mismo (sigue contando para `lastTimestampUs`)
+  private inflight: PendingRow[] = [];
+  // Tras un fallo de escritura los reintentos van por temporizador, no en cada `enqueue`
+  private flushFailed = false;
+  // Se incrementa en `clear()` para que un lote fallido anterior no reaparezca
+  private generation = 0;
+  // Filas descartadas por el tope de la cola desde el último volcado (se registran una vez por intento)
+  private droppedRows = 0;
   private flushTimer: NodeJS.Timeout | undefined;
   private statsCache: { at: number; stats: HistoryStats } | undefined;
   private nextId = 1;
@@ -185,9 +218,10 @@ export class HistoryStore {
     // Sin prefijo de kubelet válido se usa la hora de recepción
     const tsUs = micros ?? Date.now() * 1000;
     const k8sTimestamp = micros !== null ? log.k8sTimestamp as string : new Date(tsUs / 1000).toISOString();
-    this.queue.push({ scope, tsUs, k8sTimestamp, log });
+    this.queue.push({ scope, tsUs, fromKubelet: micros !== null, k8sTimestamp, log });
+    this.trimQueue();
 
-    if (this.queue.length >= BATCH_ROWS) {
+    if (this.queue.length >= BATCH_ROWS && !this.flushFailed) {
       void this.flush();
     } else if (this.flushTimer === undefined) {
       this.flushTimer = setTimeout(() => void this.flush(), BATCH_INTERVAL_MS);
@@ -195,21 +229,49 @@ export class HistoryStore {
     }
   }
 
-  // Un volcado a la vez; la cola se toma al empezar, así recoge lo encolado mientras esperaba. Nunca rechaza.
+  // Aplica el tope de la cola: descarta las filas más antiguas hasta la marca baja (se registran en el siguiente volcado)
+  private trimQueue(): void {
+    if (this.queue.length <= MAX_QUEUE_ROWS) return;
+    const excess = this.queue.length - QUEUE_LOW_MARK;
+    this.queue.splice(0, excess);
+    this.droppedRows += excess;
+  }
+
+  // Un volcado a la vez; la cola se toma al empezar, así recoge lo encolado mientras esperaba. Si el lote falla se
+  // devuelve al principio de la cola (mismo orden) y se reintenta en el siguiente volcado. Nunca rechaza.
   flush(): Promise<void> {
     if (this.flushTimer !== undefined) {
       clearTimeout(this.flushTimer);
       this.flushTimer = undefined;
     }
     return this.writeLock.run(async () => {
+      if (this.droppedRows > 0) {
+        this.logger.error(`Cola de escritura llena: se descartaron ${this.droppedRows} líneas antiguas que no se pudieron guardar`);
+        this.droppedRows = 0;
+      }
       if (this.queue.length === 0 || this.closed) return;
       const rows = this.queue;
+      const generation = this.generation;
       this.queue = [];
+      this.inflight = rows;
       try {
         await this.insertRows(rows);
+        this.flushFailed = false;
         this.statsCache = undefined;
       } catch (err) {
-        this.logger.error(`No se pudo guardar un lote de ${rows.length} líneas: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`No se pudo guardar un lote de ${rows.length} líneas (se reintentará): ${err instanceof Error ? err.message : String(err)}`);
+        this.flushFailed = true;
+        // `clear()` descarta la cola: un lote de antes de la limpieza no debe volver
+        if (generation === this.generation) {
+          this.queue = rows.concat(this.queue);
+          this.trimQueue();
+          if (this.flushTimer === undefined && !this.closed) {
+            this.flushTimer = setTimeout(() => void this.flush(), BATCH_INTERVAL_MS);
+            this.flushTimer.unref();
+          }
+        }
+      } finally {
+        this.inflight = [];
       }
     });
   }
@@ -229,7 +291,7 @@ export class HistoryStore {
           if (value === undefined) appender.appendNull();
           else appender.appendVarchar(value);
         };
-        for (const { scope, tsUs, k8sTimestamp, log } of rows) {
+        for (const { scope, tsUs, fromKubelet, k8sTimestamp, log } of rows) {
           appender.appendBigInt(BigInt(this.nextId++));
           appender.appendBigInt(BigInt(tsUs));
           appender.appendVarchar(scope.context);
@@ -250,9 +312,12 @@ export class HistoryStore {
           appender.appendVarchar(log.raw);
           appender.endRow();
 
-          const key = scopeKey(scope);
-          const previous = lastBySource.get(key);
-          if (previous === undefined || tsUs > previous.tsUs) lastBySource.set(key, { scope, tsUs });
+          // Solo los timestamps de kubelet avanzan el punto de reanudación; la hora de llegada no
+          if (fromKubelet) {
+            const key = scopeKey(scope);
+            const previous = lastBySource.get(key);
+            if (previous === undefined || tsUs > previous.tsUs) lastBySource.set(key, { scope, tsUs });
+          }
         }
         appender.flushSync();
       } finally {
@@ -276,8 +341,8 @@ export class HistoryStore {
   // Último timestamp de kubelet (µs) guardado (o aún en cola) para un contenedor; null si no hay datos
   async lastTimestampUs(scope: LogScope): Promise<number | null> {
     let last: number | null = null;
-    for (const row of this.queue) {
-      if (row.scope.context === scope.context && row.scope.namespace === scope.namespace
+    for (const row of this.inflight.concat(this.queue)) {
+      if (row.fromKubelet && row.scope.context === scope.context && row.scope.namespace === scope.namespace
         && row.scope.pod === scope.pod && row.scope.container === scope.container) {
         last = last === null ? row.tsUs : Math.max(last, row.tsUs);
       }
@@ -309,7 +374,13 @@ export class HistoryStore {
     const conn = await this.instance.connect();
     try {
       await conn.run('BEGIN TRANSACTION');
-      return await fn({ all: async (sql, params) => (await conn.runAndReadAll(sql, params)).getRowObjects() });
+      return await fn({
+        all: async (sql, params) => (await conn.runAndReadAll(sql, params)).getRowObjects(),
+        restart: async () => {
+          await conn.run('ROLLBACK').catch(() => undefined);
+          await conn.run('BEGIN TRANSACTION');
+        },
+      });
     } finally {
       // Cerrar la conexión descarta la transacción de solo lectura
       conn.closeSync();
@@ -327,6 +398,30 @@ export class HistoryStore {
     if (toUs !== undefined) {
       conditions.push('min_ts_us < ?');
       params.push(toUs);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await reader.all(
+      `SELECT bucket_us, file, bytes FROM segments ${where} ORDER BY bucket_us DESC, id DESC`,
+      params,
+    );
+    return rows.map((row) => ({
+      bucketUs: Number(row.bucket_us),
+      bytes: Number(row.bytes),
+      path: join(this.segmentsDir, String(row.file)),
+    }));
+  }
+
+  // Segmentos cuyo cubo está en [startUs, endUs) (límites infinitos = sin cota), del más reciente al más antiguo
+  async listBucketRange(reader: Reader, startUs: number, endUs: number): Promise<SegmentRef[]> {
+    const conditions: string[] = [];
+    const params: SqlParam[] = [];
+    if (Number.isFinite(startUs)) {
+      conditions.push('bucket_us >= ?');
+      params.push(startUs);
+    }
+    if (Number.isFinite(endUs)) {
+      conditions.push('bucket_us < ?');
+      params.push(endUs);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const rows = await reader.all(
@@ -510,8 +605,8 @@ export class HistoryStore {
     const maxBytes = retention.maxSizeMb * 1024 * 1024;
     const [total] = await this.all('SELECT coalesce(sum(bytes), 0) AS bytes FROM segments');
     let segmentBytes = Number(total.bytes);
-    const fixedBytes = await this.databaseBytes();
-    while (!this.closed && fixedBytes + segmentBytes > maxBytes) {
+    // El límite aplica solo a los segmentos Parquet; la base de datos y el WAL no se cuentan aquí
+    while (!this.closed && segmentBytes > maxBytes) {
       const [oldest] = await this.all('SELECT id, file, bytes FROM segments ORDER BY bucket_us ASC, id ASC LIMIT 1');
       if (oldest === undefined) break;
       await this.dropSegment(Number(oldest.id), String(oldest.file));
@@ -525,6 +620,7 @@ export class HistoryStore {
   async clear(): Promise<void> {
     await this.maintenanceLock.run(async () => {
       this.queue = [];
+      this.generation++;
       await this.writeLock.run(async () => {
         await this.writer.run('BEGIN TRANSACTION');
         try {
@@ -547,6 +643,11 @@ export class HistoryStore {
   async close(): Promise<void> {
     if (this.closed) return;
     await this.flush();
+    if (this.droppedRows > 0) {
+      this.logger.error(`Cola de escritura llena: se descartaron ${this.droppedRows} líneas antiguas que no se pudieron guardar`);
+      this.droppedRows = 0;
+    }
+    if (this.queue.length > 0) this.logger.error(`Cierre con ${this.queue.length} líneas sin guardar (la base de datos no aceptó escrituras)`);
     try {
       await this.rollover();
     } catch (err) {

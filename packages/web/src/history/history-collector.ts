@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { KubeClient, LEVEL_PRIORITY, parseLogLine } from '@klv/core';
-import type { LogOptions, ParsedLog, PodInfo, PodWatchEventType } from '@klv/core';
+import type { LogOptions, LogStream, ParsedLog, PodInfo, PodWatchEventType } from '@klv/core';
 import { parseKubeletMicros } from './history-store';
 import type { HistoryStore, LogScope } from './history-store';
 import type { CollectorStatus, CollectorStream, CollectorTarget } from './history.types';
@@ -20,10 +20,12 @@ class StreamFollower {
   private lastLineAt: string | undefined;
   private backoff = MIN_BACKOFF_MS;
   private timer: NodeJS.Timeout | undefined;
-  private stopStream: (() => void) | undefined;
+  private stream: LogStream | undefined;
   private attempt = 0;
-  // Mayor timestamp aceptado por este follower: cubre la ventana aún sin volcar al reconectar
+  // Mayor timestamp leído por este follower (filtrado o no) y cuántas líneas se leyeron con ese timestamp: al
+  // reconectar en el mismo proceso se descartan las anteriores y solo las N primeras de ese instante
   private lastTs: number | null = null;
+  private lastTsCount = 0;
   private stopped = false;
 
   constructor(
@@ -40,8 +42,8 @@ class StreamFollower {
   stop(): void {
     this.stopped = true;
     clearTimeout(this.timer);
-    this.stopStream?.();
-    this.stopStream = undefined;
+    this.stream?.stop();
+    this.stream = undefined;
   }
 
   status(): CollectorStream {
@@ -64,19 +66,24 @@ class StreamFollower {
   private async connect(): Promise<void> {
     if (this.stopped) return;
     const attempt = ++this.attempt;
-    const storedUs = await this.store.lastTimestampUs(this.scope);
+    // Con el proceso en marcha se conoce cuántas líneas del último instante (lastTs) se leyeron: se descartan las
+    // anteriores y solo las primeras N de ese instante. Solo si este follower aún no ha leído nada el punto sale de
+    // la base de datos (tras un reinicio no se sabe cuántas se leyeron) y se descarta todo lo que tenga ts_us <= storedUs
+    const inProcess = this.lastTs !== null;
+    const storedUs = inProcess ? null : await this.store.lastTimestampUs(this.scope);
     if (this.stopped || attempt !== this.attempt) return;
-    // Todo lo que tenga ts_us <= resumeUs ya está guardado (o encolado) y se descarta
-    const resumeUs = storedUs === null || (this.lastTs !== null && this.lastTs > storedUs) ? this.lastTs : storedUs;
-    const resume: Pick<LogOptions, 'tailLines' | 'sinceTime'> = resumeUs === null
+    const floorUs = inProcess ? this.lastTs : storedUs;
+    const floorCount = inProcess ? this.lastTsCount : null;
+    let skippedAtFloor = 0;
+    const resume: Pick<LogOptions, 'tailLines' | 'sinceTime'> = floorUs === null
       ? { tailLines: FIRST_TAIL_LINES }
-      : { sinceTime: new Date(Math.floor(resumeUs / 1_000_000) * 1000).toISOString() };
+      : { sinceTime: new Date(Math.floor(floorUs / 1_000_000) * 1000).toISOString() };
     let ended = false;
 
     const end = (state: CollectorStream['state'], error?: string): void => {
       if (ended || this.stopped || attempt !== this.attempt) return;
       ended = true;
-      this.stopStream = undefined;
+      this.stream = undefined;
       this.state = error !== undefined && NOT_STARTED.test(error) ? 'waiting' : state;
       this.error = error;
       const delay = this.backoff;
@@ -84,7 +91,7 @@ class StreamFollower {
       this.timer = setTimeout(() => void this.connect(), delay);
     };
 
-    const stop = await this.client.streamLogs(
+    const stream = await this.client.streamLogs(
       { namespace: this.scope.namespace, podName: this.scope.pod, container: this.scope.container, timestamps: true, ...resume },
       {
         onLine: (line) => {
@@ -95,13 +102,28 @@ class StreamFollower {
           this.lastLineAt = new Date().toISOString();
 
           const log = parseLogLine(line, this.scope.pod);
-          if (this.filtered(log)) return;
           // Las líneas sin prefijo de kubelet válido llevan la hora de llegada y nunca se descartan
           const tsUs = log.k8sTimestamp !== undefined ? parseKubeletMicros(log.k8sTimestamp) : null;
           if (tsUs !== null) {
-            if (resumeUs !== null && tsUs <= resumeUs) return;
-            if (this.lastTs === null || tsUs > this.lastTs) this.lastTs = tsUs;
+            if (floorUs !== null) {
+              if (tsUs < floorUs) return;
+              if (tsUs === floorUs) {
+                if (floorCount === null) return;
+                if (skippedAtFloor < floorCount) {
+                  skippedAtFloor++;
+                  return;
+                }
+              }
+            }
+            // Toda línea leída cuenta, la filtre el target o no
+            if (this.lastTs === null || tsUs > this.lastTs) {
+              this.lastTs = tsUs;
+              this.lastTsCount = 1;
+            } else if (tsUs === this.lastTs) {
+              this.lastTsCount++;
+            }
           }
+          if (this.filtered(log)) return;
           this.store.enqueue(this.scope, log);
         },
         onError: (err) => end('error', err.message),
@@ -111,10 +133,10 @@ class StreamFollower {
 
     if (ended) return;
     if (this.stopped || attempt !== this.attempt) {
-      stop();
+      stream.stop();
       return;
     }
-    this.stopStream = stop;
+    this.stream = stream;
     this.state = 'following';
     this.error = undefined;
   }

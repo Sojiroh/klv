@@ -6,6 +6,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::query::string_form;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogLevel {
     TRACE,
@@ -254,22 +256,26 @@ fn find_value<'a>(obj: &'a Map<String, Value>, candidates: &[&str]) -> Option<&'
     None
 }
 
+/// Texto del valor como `String(valor)` / `JSON.stringify(valor)` de JS (ver `query::string_form`).
 fn stringify(value: &Value) -> String {
+    string_form(value).into_owned()
+}
+
+/// Como `stringify`, pero los enteros JSON que caben en i64/u64 conservan sus dígitos exactos
+/// (ids de traza de 64 bits; el parser TS los recupera del literal con `context.source`).
+fn stringify_id(value: &Value) -> String {
     match value {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => match n.as_f64() {
-            // JS imprime los floats enteros sin parte decimal
-            Some(f) if n.is_f64() && f.is_finite() && f.fract() == 0.0 && f.abs() < 1e21 => {
-                format!("{f:.0}")
-            }
-            _ => n.to_string(),
-        },
-        other => other.to_string(),
+        Value::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+        other => stringify(other),
     }
 }
 
 fn find_field(obj: &Map<String, Value>, candidates: &[&str]) -> Option<String> {
     find_value(obj, candidates).map(stringify)
+}
+
+fn find_id_field(obj: &Map<String, Value>, candidates: &[&str]) -> Option<String> {
+    find_value(obj, candidates).map(stringify_id)
 }
 
 fn detect_level_from_text(text: &str) -> LogLevel {
@@ -410,8 +416,8 @@ pub fn parse_log_line(line: &str, pod_name: Option<&str>) -> ParsedLog {
     let service = find_field(&record, SERVICE_FIELDS);
     let env = find_field(&record, ENV_FIELDS);
     let version = find_field(&record, VERSION_FIELDS);
-    let trace_id = find_field(&record, TRACE_FIELDS);
-    let span_id = find_field(&record, SPAN_FIELDS);
+    let trace_id = find_id_field(&record, TRACE_FIELDS);
+    let span_id = find_id_field(&record, SPAN_FIELDS);
     let caller = find_field(&record, CALLER_FIELDS);
     // Un `error` objeto (estándar Datadog) nunca se convierte a texto: se hoistean message/stack y el resto queda en extra
     let error_is_object = matches!(record.get("error"), Some(Value::Object(_)));

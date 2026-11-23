@@ -4,7 +4,7 @@ import { columnLabel, columnValue, type ColumnId } from '../../lib/columns';
 import { highlight } from '../../lib/highlight';
 import type { ParsedLog } from '../../types';
 import { formatMs, levelConfig, prettyRaw } from '../../utils/log-utils';
-import { cachedTime } from './pipeline';
+import { cachedTime } from '../../lib/time';
 import { XIcon } from './icons';
 
 const HEADER_HEIGHT = 28;

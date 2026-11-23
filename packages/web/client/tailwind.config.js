@@ -4,9 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ['Syne', 'sans-serif'],
-        body: ['Outfit', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        display: ['Syne Variable', 'sans-serif'],
+        body: ['Outfit Variable', 'sans-serif'],
+        mono: ['JetBrains Mono Variable', 'monospace'],
       },
       // Paleta clara estilo Datadog: fondo gris lavanda, superficies blancas y morado como acento
       colors: {

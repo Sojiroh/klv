@@ -51,9 +51,9 @@ pub fn validate_name(kind: NameKind, value: &str) -> Result<(), KlvError> {
     if valid {
         Ok(())
     } else {
-        Err(KlvError::new(format!(
-            "Nombre de {} inválido: \"{value}\"",
-            kind.as_str()
-        )))
+        Err(KlvError::with_status(
+            400,
+            format!("Nombre de {} inválido: \"{value}\"", kind.as_str()),
+        ))
     }
 }

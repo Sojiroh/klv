@@ -14,12 +14,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let client = tauri::async_runtime::block_on(async {
-                kube::Client::try_default()
-                    .await
-                    .map_err(|e| e.to_string())
-            });
-            let state = AppState::new(client);
+            let initial = tauri::async_runtime::block_on(state::initial_client());
+            let state = AppState::new(initial);
             app.manage(state);
             let history = tauri::async_runtime::block_on(HistoryState::start(
                 app.path().app_data_dir().map_err(|e| e.to_string()),

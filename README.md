@@ -18,7 +18,7 @@ packages/
 - **Core**: TypeScript, @kubernetes/client-node
 - **CLI**: Commander, chalk, ora, cli-table3
 - **Backend**: NestJS, Socket.IO (WebSocket gateway)
-- **Frontend**: React 19, Vite, Tailwind CSS (tema claro estilo Datadog), React Router, socket.io-client, @tanstack/react-virtual
+- **Frontend**: React 19, Vite, Tailwind CSS (tema claro estilo Datadog), React Router, socket.io-client, @tanstack/react-virtual; las fuentes van incluidas en el bundle (sin peticiones externas)
 - **Desktop**: Tauri 2, Rust, kube-rs, tokio
 
 ## Instalacion
@@ -47,13 +47,13 @@ npm run dev:client -w @klv/web
 
 ### Configuracion
 
-El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por eso por defecto solo escucha en loopback y solo acepta conexiones WebSocket de origenes conocidos.
+El servidor no tiene autenticacion y usa las credenciales de tu kubeconfig, por eso por defecto solo escucha en loopback y rechaza con 403 cualquier peticion HTTP o conexion WebSocket cuya cabecera `Host` u `Origin` no este en la lista de origenes conocidos (protege de paginas web maliciosas, incluido DNS rebinding).
 
 | Variable | Default | Descripcion |
 |----------|---------|-------------|
-| `HOST` | `127.0.0.1` | Interfaz donde escucha el servidor. Usa `0.0.0.0` solo si de verdad quieres exponerlo en la red |
+| `HOST` | `127.0.0.1` | Interfaz donde escucha el servidor. Usa `0.0.0.0` solo si de verdad quieres exponerlo en la red, y añade a `KLV_ALLOWED_ORIGINS` la URL con la que se accede |
 | `PORT` | `3000` | Puerto HTTP/WebSocket |
-| `KLV_ALLOWED_ORIGINS` | — | Origenes extra (separados por coma) aceptados por el WebSocket, ademas de `localhost`/`127.0.0.1` en `PORT` y el dev server `:5173` |
+| `KLV_ALLOWED_ORIGINS` | — | Origenes extra (separados por coma, p. ej. `http://192.168.1.10:3000`) aceptados en las cabeceras `Origin` y `Host` de HTTP y WebSocket, ademas de `localhost`/`127.0.0.1`/`[::1]` en `PORT`, el propio `HOST:PORT` y el dev server `:5173` |
 | `KLV_DATA_DIR` | `~/.klv` | Carpeta donde se guarda el historial local (`config.json`, `history.duckdb`, `segments/`) |
 
 ### Paginas
@@ -67,7 +67,7 @@ El selector de **contexto** esta en la barra superior de todas las paginas; camb
   - La tabla se refresca cada 2 s durante un rollout y cada 5 s mientras haya pods no listos
 - **Logs** — Log Explorer de un pod o de un container agregado (multi-pod)
 - **Search** — Log Explorer sobre todos los pods de un namespace (opcionalmente filtrado por container)
-- **Stream** — Live tail via WebSocket con buffer configurable (2k–500k lineas o sin limite, con estimacion de memoria en vivo) y el mismo query language, facetas, columnas y export sobre el buffer
+- **Stream** — Live tail via WebSocket con buffer configurable (2k–500k lineas o sin limite, con estimacion de memoria en vivo) y el mismo query language, facetas, columnas y export sobre el buffer. **Pause** congela la vista: las lineas nuevas se retienen aparte (hasta el tamaño del buffer; las mas antiguas de esa espera se descartan) y se incorporan al reanudar. Con buffers grandes la vista se refresca mas despacio (hasta 1 s) y las facetas, el histograma y los patrones se recalculan en segundo plano
 - **History** — Log Explorer sobre el historial local guardado por el recolector, y configuracion de targets, retencion y estado del recolector
 
 ### Log Explorer
@@ -90,15 +90,17 @@ Sintaxis del query:
 |---------|-------------|
 | `timeout` / `"connection refused"` | Texto libre (sin distinguir mayusculas) en `message`, `error` y `stack` (como Datadog); para otros campos usa `campo:valor` y para atributos `@campo:valor` |
 | `time*out`, `te?t` | Comodines: `*` cualquier texto, `?` un caracter |
-| `level:error`, `level:>=warn` | Nivel exacto o minimo (alias `status:`) |
+| `level:error`, `level:>=warn` | Nivel exacto o minimo. `status:` es alias del nivel solo con un nombre de nivel (`status:error`, `status:>=warn`); con cualquier otro valor (`status:500`, `status:>=500`, `status:[500 TO 599]`, `status:ok`) filtra el atributo `@status`, igual que hace el parser |
 | `service:api-*`, `env:prod`, `version:1.2.3`, `pod:web-1`, `container:app`, `namespace:prod`, `trace:abc`, `span:x`, `caller:main.go*`, `message:hola`, `error:*` | Campos reservados (`field:*` = existe). Los tags de Datadog `@dd.trace_id:`/`dd.trace_id:`, `dd.span_id:`, `dd.service:`, `dd.env:` y `dd.version:` son alias de los campos reservados |
 | `service:(web OR api)` | Varios valores de un campo (admite `OR`, `AND` y `NOT` dentro de los parentesis) |
 | `@http.status:500`, `@user.id:*`, `@duration:>500`, `@http.status:[500 TO 599]` | Atributos JSON (ruta con puntos), comparaciones y rangos numericos |
-| `-healthcheck`, `NOT service:api`, `(a OR b) AND c` | Negacion, `AND` implicito, `OR` y parentesis |
+| `-healthcheck`, `NOT service:api`, `(a OR b) AND c` | Negacion, `AND` implicito, `OR` y parentesis (hasta 64 niveles de profundidad) |
 
 ### Historial local (retencion)
 
 El recolector sigue continuamente los pods de los targets configurados (contexto + namespace + `containers` y/o label selector opcionales; `containers` es una lista, vacia = todos los containers, y en la UI se elige con un selector de checkboxes que consulta los containers del namespace), reconecta tras reinicios y rollouts, y guarda los logs en DuckDB + segmentos Parquet por hora comprimidos con zstd en `$KLV_DATA_DIR/segments/` (o `~/.klv/segments/`). `history.duckdb` contiene solo la hora en curso y los metadatos; `config.json` guarda los targets y la retencion. La retencion se limita por dias y por tamaño (por defecto 7 dias y 1 GB) y borra archivos enteros, asi que es instantanea y no bloquea el servidor. El tamaño en disco es aprox. 1/8–1/15 del volumen crudo de logs JSON. Solo recolecta mientras el servidor (o la app de escritorio) esta corriendo.
+
+El limite de tamaño se aplica a los segmentos Parquet: `history.duckdb` (la hora en curso) no cuenta para el limite, aunque si aparece en el tamaño total del estado. Si falla una escritura, el lote se conserva y se reintenta en orden; al reconectar un stream se retoma sin perder ni duplicar lineas que compartan el ultimo timestamp guardado.
 
 Cada target admite filtros opcionales aplicados antes de guardar:
 
@@ -124,20 +126,20 @@ Al arrancar con un `history.db` de la version anterior (SQLite) se migran los ta
 | `GET /api/pods/:ns/container/:container/logs` | Logs agregados de todos los pods con ese container, ordenados por timestamp de Kubernetes; incluye `pods` y `failedPods`; la respuesta se limita a 32 MB de lineas (repartidos entre los pods): si se supera se conservan las mas recientes y se indica con `truncatedPods` (query: `level`, `search`, `tail`, `since`, `limit`, `offset`, `previous`) |
 | `GET /api/history/config` / `PUT /api/history/config` | Targets del recolector (cada uno con `containers`, `minLevel` y `exclude` opcionales; el `container` legado se sigue aceptando) y retencion |
 | `GET /api/history/status` | Estadisticas del historial y estado de cada target |
-| `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language) |
+| `POST /api/history/query` | Consultar el historial (`{ namespace?, pods?, containers?, from?, to?, query?, limit?, before? }`, `query` es el AST del query language; `from`/`to` son fechas RFC 3339 con desfase explicito, p. ej. `2026-01-15T10:30:00Z` o `2026-01-15T10:30:00-03:00`) |
 | `POST /api/history/clear` | Borrar el historial |
 
 Los `POST`/`PUT` de `/api/history` y las acciones sobre workloads requieren `Content-Type: application/json` (bloquea formularios cross-site); `DELETE` no lo necesita porque un formulario no puede enviarlo y el navegador exige preflight CORS.
 
-Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403/404 de Kubernetes, 409 al reiniciar un deployment pausado, 502 si falla el apiserver).
+Los errores responden `{ statusCode, message }` con el status real (400 parametros invalidos, 403 `Host`/`Origin` no permitido, 403/404 de Kubernetes, 409 al reiniciar un deployment pausado, 502 si falla el apiserver).
 
 ### WebSocket
 
-Eventos Socket.IO para streaming en tiempo real:
+Eventos Socket.IO para streaming en tiempo real (solo transporte WebSocket; el long-polling esta deshabilitado):
 
-- `stream:start` — Iniciar stream (payload: `{ streamId, namespace, pods[], container? }`); detiene cualquier stream previo del mismo socket. El filtrado se hace en el cliente con el query language
+- `stream:start` — Iniciar stream (payload: `{ streamId, namespace, pods[], container? }`); detiene cualquier stream previo del mismo socket y abre cada pod una sola vez aunque se repita. El filtrado se hace en el cliente con el query language
 - `stream:stop` — Detener stream
-- `stream:log` — Lote de logs parseados `{ streamId, logs[] }` (servidor -> cliente, cada ~100 ms)
+- `stream:log` — Lote de logs parseados `{ streamId, logs[] }` (servidor -> cliente, cada ~100 ms, hasta 500 lineas por evento). Si el cliente no drena el socket, el servidor deja de leer de los pods hasta que lo haga (contrapresion, sin descartar lineas). Una linea de mas de 1 MiB se entrega truncada
 - `stream:error` — Error de stream `{ streamId, podName?, error }` (servidor -> cliente)
 - `stream:end` — El stream de un pod termino `{ streamId, podName }` (servidor -> cliente)
 
@@ -166,8 +168,8 @@ npm run build:desktop
 
 | Comando | Descripcion |
 |---------|-------------|
-| `get_contexts` | Contextos disponibles y el contexto activo |
-| `set_context` | Cambiar el contexto activo (solo en memoria, no modifica `~/.kube/config`) |
+| `get_contexts` | Contextos disponibles y el contexto activo (el del cliente en uso: se fija al arrancar y solo cambia con `set_context`, aunque otro programa modifique el kubeconfig) |
+| `set_context` | Cambiar el contexto activo (solo en memoria, no modifica `~/.kube/config`); detiene los streams activos |
 | `get_namespaces` | Listar namespaces |
 | `get_pods` | Listar pods de un namespace |
 | `get_containers` | Listar containers distintos de un namespace |
@@ -184,6 +186,8 @@ npm run build:desktop
 | `history_query` | Consultar el historial local |
 | `history_clear` | Borrar el historial |
 | `export_save` | Guardar un export (CSV/JSON) con el dialogo nativo |
+
+Los comandos fallan con `{ message, statusCode? }`, con el mismo codigo que devolveria la API REST (400, 404, 409, 502).
 
 ## CLI
 
@@ -278,8 +282,8 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 | Flag | Descripcion |
 |------|-------------|
 | `-c, --container <name>` | Container especifico (si el pod tiene varios) |
-| `-t, --tail <lines>` | Ultimas N lineas (default: 100) |
-| `--since <seconds>` | Logs de los ultimos N segundos |
+| `-t, --tail <lines>` | Ultimas N lineas (default: 100; `0` = ninguna linea anterior) |
+| `--since <seconds>` | Logs de los ultimos N segundos (entero >= 1) |
 | `--level <level>` | Nivel minimo: TRACE, DEBUG, INFO, WARN, ERROR, FATAL |
 | `-s, --search <term>` | Buscar texto en mensaje, error, service, extras |
 | `--service <name>` | Filtrar por campo service/app del JSON |
@@ -291,6 +295,8 @@ klv -n mi-namespace search "OOM" --label "app=mi-servicio"
 | `--raw` | Mostrar JSON sin parsear (pretty-printed) |
 | `--previous` | Logs del contenedor anterior (antes del ultimo reinicio) |
 
+Los caracteres de control que vengan en un log (incluidas las secuencias de escape ANSI) se muestran escapados (`\x1b`), para que un contenedor no pueda manipular la terminal.
+
 ## Parser de logs
 
 Reconoce automaticamente campos comunes de logs JSON:
@@ -301,8 +307,8 @@ Reconoce automaticamente campos comunes de logs JSON:
 - **Service**: `service`, `dd.service`, `service_name`, `app`, `logger`
 - **Env**: `dd.env`, `dd_env`, `env`
 - **Version**: `dd.version`, `dd_version`, `version`
-- **Trace**: `dd.trace_id` (plano o anidado en `dd`), `dd_trace_id`, `trace_id`, `traceId`, `x-request-id`, `requestId`
-- **Span**: `dd.span_id`, `span_id`, `spanId`
+- **Trace**: `dd.trace_id` (plano o anidado en `dd`), `dd_trace_id`, `trace_id`, `traceId`, `x-request-id`, `requestId`; los IDs numericos de 64 bits conservan todos sus digitos
+- **Span**: `dd.span_id`, `span_id`, `spanId` (igual que Trace)
 - **Error**: `error.message`, `error`, `err`, `exception`, `error_message`; si `error` es un objeto estilo Datadog, `message` se usa como error
 - **Stack**: `error.stack`, `stack`, `stackTrace`, `stack_trace`, `error.stack_trace`
 
@@ -325,6 +331,8 @@ Compatible con Spring Boot, NestJS, pino, ECS, Go (zap/zerolog), Python (structl
 | `npm run build:desktop` | Build app de escritorio Tauri (.deb/.rpm) |
 | `npm run dev:web` | NestJS en watch mode |
 | `npm run dev:desktop` | Tauri dev (Vite + ventana nativa) |
+| `npm test -w @klv/core` | Tests de paridad del parser y del query language (vitest) |
+| `cargo test` (en `packages/desktop/src-tauri`) | Los mismos fixtures contra el parser y el evaluador de Rust |
 
 ## Desarrollo
 

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams, LogParams};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{command, AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
@@ -28,6 +29,7 @@ const MAX_LOG_READ_BYTES: usize = 32 * 1024 * 1024;
 const MIN_POD_READ_BYTES: usize = 64 * 1024;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
+const MAX_STREAM_LINE_BYTES: usize = 1024 * 1024;
 const STREAM_TAIL: i64 = 50;
 const STREAM_MAX_PODS: usize = 100;
 const STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
@@ -40,8 +42,8 @@ pub struct LogQueryParams {
     pub namespace: String,
     pub pod: String,
     pub container: Option<String>,
-    pub tail: Option<u64>,
-    pub since: Option<u64>,
+    pub tail: Option<Value>,
+    pub since: Option<Value>,
     pub level: Option<String>,
     pub search: Option<String>,
     pub limit: Option<usize>,
@@ -93,26 +95,21 @@ struct QueryOptions {
 
 impl QueryOptions {
     fn new(
-        tail: Option<u64>,
-        since: Option<u64>,
+        tail: Option<&Value>,
+        since: Option<&Value>,
         previous: Option<bool>,
         level: Option<&str>,
         search: Option<String>,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Self, KlvError> {
-        let since = match since {
-            None => None,
-            Some(0) => return Err(KlvError::new("since debe ser un número entero mayor o igual a 1")),
-            Some(s) => Some(
-                i64::try_from(s).map_err(|_| KlvError::new("since es demasiado grande"))?,
-            ),
-        };
+        let tail = parse_uint(tail, "tail", 0)?;
+        let since = parse_uint(since, "since", 1)?;
 
         Ok(Self {
-            // MAX_TAIL cabe de sobra en i64
+            // Ambos <= 2^53 - 1 (parse_uint) y tail <= MAX_TAIL: caben de sobra en i64
             tail: tail.unwrap_or(DEFAULT_TAIL).min(MAX_TAIL) as i64,
-            since,
+            since: since.map(|s| s as i64),
             previous: previous.unwrap_or(false),
             filter: build_filter(parse_min_level(level)?, search),
             limit: limit.map(|l| l.min(MAX_LIMIT)),
@@ -121,14 +118,42 @@ impl QueryOptions {
     }
 }
 
-/// `level` vacío o ausente = sin filtro; si viene, debe mapear a un nivel conocido.
+/// Entero no negativo igual que `parseUint` de `log.controller.ts`: número JSON o cadena de dígitos,
+/// seguro (<= 2^53 - 1) y `>= min`. Los errores son 400 con el mismo mensaje.
+fn parse_uint(value: Option<&Value>, name: &str, min: u64) -> Result<Option<u64>, KlvError> {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    let invalid = || KlvError::with_status(400, format!("{name} debe ser un número entero no negativo"));
+    let too_big = || KlvError::with_status(400, format!("{name} es demasiado grande"));
+
+    let n = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Number(n)) => n.as_u64().ok_or_else(invalid)?,
+        Some(Value::String(s)) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+            s.parse::<u64>().map_err(|_| too_big())?
+        }
+        Some(_) => return Err(invalid()),
+    };
+    if n > MAX_SAFE_INTEGER {
+        return Err(too_big());
+    }
+    if n < min {
+        return Err(KlvError::with_status(
+            400,
+            format!("{name} debe ser un número entero mayor o igual a {min}"),
+        ));
+    }
+    Ok(Some(n))
+}
+
+/// Ausente = sin filtro; si viene (incluso vacío) debe mapear a un nivel conocido, como `parseMinLevel`.
 fn parse_min_level(level: Option<&str>) -> Result<Option<LogLevel>, KlvError> {
     match level {
-        None | Some("") => Ok(None),
+        None => Ok(None),
         Some(raw) => match parse_log_level(raw) {
-            LogLevel::UNKNOWN => Err(KlvError::new(format!(
-                "Nivel inválido: {raw}. Válidos: TRACE, DEBUG, INFO, WARN, ERROR, FATAL"
-            ))),
+            LogLevel::UNKNOWN => Err(KlvError::with_status(
+                400,
+                format!("Nivel inválido: {raw}. Válidos: TRACE, DEBUG, INFO, WARN, ERROR, FATAL"),
+            )),
             level => Ok(Some(level)),
         },
     }
@@ -136,11 +161,9 @@ fn parse_min_level(level: Option<&str>) -> Result<Option<LogLevel>, KlvError> {
 
 fn build_filter(min_level: Option<LogLevel>, search: Option<String>) -> LogFilter {
     LogFilter {
-        level: None,
         min_level,
         search,
-        trace_id: None,
-        service: None,
+        ..Default::default()
     }
 }
 
@@ -243,14 +266,12 @@ async fn fetch_pod_logs(
         previous: options.previous,
         ..Default::default()
     };
-    let fetch_error = |detail: String| {
-        KlvError::new(format!("Error al obtener logs del pod \"{pod}\": {detail}"))
-    };
+    let action = format!("Error al obtener logs del pod \"{pod}\"");
 
     let reader = api
         .log_stream(pod, &lp)
         .await
-        .map_err(|e| fetch_error(kube_error_message(&e)))?;
+        .map_err(|e| KlvError::from_kube(&action, &e))?;
     futures::pin_mut!(reader);
 
     let mut window = NewestLines::new(max_bytes);
@@ -259,7 +280,7 @@ async fn fetch_pod_logs(
         let n = reader
             .read(&mut chunk)
             .await
-            .map_err(|e| fetch_error(e.to_string()))?;
+            .map_err(|e| KlvError::new(format!("{action}: {e}")))?;
         if n == 0 {
             break;
         }
@@ -288,20 +309,21 @@ pub async fn get_pod_logs(
     state: State<'_, Arc<AppState>>,
     params: LogQueryParams,
 ) -> Result<LogsResponse, KlvError> {
-    validate_name(NameKind::Namespace, &params.namespace)?;
-    validate_name(NameKind::Pod, &params.pod)?;
-    if let Some(container) = &params.container {
-        validate_name(NameKind::Container, container)?;
-    }
+    // Mismo orden que la API web: primero los parámetros de consulta, luego los nombres
     let options = QueryOptions::new(
-        params.tail,
-        params.since,
+        params.tail.as_ref(),
+        params.since.as_ref(),
         params.previous,
         params.level.as_deref(),
         params.search,
         params.limit,
         params.offset,
     )?;
+    validate_name(NameKind::Namespace, &params.namespace)?;
+    validate_name(NameKind::Pod, &params.pod)?;
+    if let Some(container) = &params.container {
+        validate_name(NameKind::Container, container)?;
+    }
 
     let client = state.get_client().await?;
     let pods_api: Api<Pod> = Api::namespaced(client, &params.namespace);
@@ -327,17 +349,26 @@ pub async fn get_container_logs(
     state: State<'_, Arc<AppState>>,
     namespace: String,
     container: String,
-    tail: Option<u64>,
-    since: Option<u64>,
+    tail: Option<serde_json::Value>,
+    since: Option<serde_json::Value>,
     previous: Option<bool>,
     level: Option<String>,
     search: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<LogsResponse, KlvError> {
+    // Mismo orden que la API web: primero los parámetros de consulta, luego los nombres
+    let options = QueryOptions::new(
+        tail.as_ref(),
+        since.as_ref(),
+        previous,
+        level.as_deref(),
+        search,
+        limit,
+        offset,
+    )?;
     validate_name(NameKind::Namespace, &namespace)?;
     validate_name(NameKind::Container, &container)?;
-    let options = QueryOptions::new(tail, since, previous, level.as_deref(), search, limit, offset)?;
 
     let client = state.get_client().await?;
     let pods_api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -345,7 +376,7 @@ pub async fn get_container_logs(
     let list = pods_api
         .list(&ListParams::default())
         .await
-        .map_err(|e| KlvError::new(format!("Error al obtener pods: {}", kube_error_message(&e))))?;
+        .map_err(|e| KlvError::from_kube("Error al obtener pods", &e))?;
 
     let matching_pods: Vec<String> = list
         .items
@@ -526,6 +557,7 @@ async fn flush_stream_events(
 }
 
 /// Lee el follow-stream de un pod línea a línea (UTF-8 con pérdida) y lo envía al flusher.
+/// Una línea de más de `MAX_STREAM_LINE_BYTES` se envía truncada a ese límite y se descarta el resto.
 async fn read_pod_stream(
     client: kube::Client,
     namespace: String,
@@ -552,30 +584,64 @@ async fn read_pod_stream(
     };
     futures::pin_mut!(reader);
 
-    let mut buf: Vec<u8> = Vec::new();
+    // Línea en curso (sin salto de línea) y si se está descartando el resto de una línea demasiado larga
+    let mut line: Vec<u8> = Vec::new();
+    let mut discarding = false;
     loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(0) => {
-                let _ = tx.send(StreamEvent::End { pod_name: pod }).await;
-                return;
-            }
-            Ok(_) => {
-                let text = String::from_utf8_lossy(&buf);
-                let line = text.trim_end_matches(['\n', '\r']);
-                if line.trim().is_empty() {
-                    continue;
+        let (consumed, eof, newline, mut complete) = {
+            let chunk = match reader.fill_buf().await {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    let error = e.to_string();
+                    let _ = tx.send(StreamEvent::Error { pod_name: pod, error }).await;
+                    return;
                 }
+            };
+            if chunk.is_empty() {
+                (0, true, false, None)
+            } else {
+                let newline = chunk.iter().position(|&b| b == b'\n');
+                let part = &chunk[..newline.unwrap_or(chunk.len())];
+                let mut complete = None;
+                if !discarding {
+                    let room = MAX_STREAM_LINE_BYTES - line.len();
+                    if part.len() > room {
+                        // Línea demasiado larga: se entrega truncada y se descarta hasta el siguiente salto
+                        line.extend_from_slice(&part[..room]);
+                        complete = Some(std::mem::take(&mut line));
+                        discarding = true;
+                    } else {
+                        line.extend_from_slice(part);
+                    }
+                }
+                (newline.map_or(chunk.len(), |i| i + 1), false, newline.is_some(), complete)
+            }
+        };
+        reader.consume_unpin(consumed);
+
+        if newline {
+            if discarding {
+                discarding = false;
+            } else {
+                complete = Some(std::mem::take(&mut line));
+            }
+        } else if eof && !discarding && !line.is_empty() {
+            complete = Some(std::mem::take(&mut line));
+        }
+
+        if let Some(bytes) = complete {
+            let text = String::from_utf8_lossy(&bytes);
+            let line = text.trim_end_matches('\r');
+            if !line.trim().is_empty() {
                 let parsed = parse_log_line(line, Some(&pod));
                 if tx.send(StreamEvent::Log(Box::new(parsed))).await.is_err() {
                     return;
                 }
             }
-            Err(e) => {
-                let error = e.to_string();
-                let _ = tx.send(StreamEvent::Error { pod_name: pod, error }).await;
-                return;
-            }
+        }
+        if eof {
+            let _ = tx.send(StreamEvent::End { pod_name: pod }).await;
+            return;
         }
     }
 }
@@ -583,9 +649,10 @@ async fn read_pod_stream(
 fn validate_stream_payload(payload: &StreamStartPayload) -> Result<(), KlvError> {
     validate_name(NameKind::Namespace, &payload.namespace)?;
     if payload.pods.is_empty() || payload.pods.len() > STREAM_MAX_PODS {
-        return Err(KlvError::new(format!(
-            "pods debe ser una lista de 1 a {STREAM_MAX_PODS} nombres"
-        )));
+        return Err(KlvError::with_status(
+            400,
+            format!("pods debe ser una lista de 1 a {STREAM_MAX_PODS} nombres"),
+        ));
     }
     for pod in &payload.pods {
         validate_name(NameKind::Pod, pod)?;
@@ -610,17 +677,21 @@ pub async fn stream_start(
         emit_stream_error(&app, &stream_id, None, &e.message);
         return Ok(());
     }
-    let client = state.get_client().await?;
-
     let StreamStartPayload {
         namespace,
         pods,
         container,
     } = payload;
+    // Un pod repetido abriría dos streams con las mismas líneas: se conserva la primera aparición
+    let mut seen = HashSet::new();
+    let pods: Vec<String> = pods
+        .into_iter()
+        .filter(|pod| seen.insert(pod.clone()))
+        .collect();
     let id = stream_id.clone();
 
     state
-        .replace_streams(stream_id, move || {
+        .start_streams(stream_id, move |client| {
             let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
             let mut handles = Vec::with_capacity(pods.len() + 1);
             handles.push(tokio::spawn(flush_stream_events(app, id, rx)));
@@ -635,7 +706,7 @@ pub async fn stream_start(
             }
             handles
         })
-        .await;
+        .await?;
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use kube::Client;
 use serde::Serialize;
 use tauri::{command, State};
 
-use crate::error::{kube_error_message, KlvError};
+use crate::error::KlvError;
 use crate::names::{validate_name, NameKind};
 use crate::state::{build_client, AppState};
 
@@ -39,10 +39,7 @@ pub async fn get_pods(
     }
 
     let list = pods_api.list(&lp).await.map_err(|e| {
-        KlvError::new(format!(
-            "Error al obtener pods del namespace \"{namespace}\": {}",
-            kube_error_message(&e)
-        ))
+        KlvError::from_kube(format!("Error al obtener pods del namespace \"{namespace}\""), &e)
     })?;
 
     let pods: Vec<PodInfo> = list
@@ -90,12 +87,7 @@ pub async fn delete(client: Client, namespace: &str, name: &str) -> Result<(), K
     api.delete(name, &DeleteParams::default())
         .await
         .map(|_| ())
-        .map_err(|e| {
-            KlvError::new(format!(
-                "Error al borrar el pod \"{name}\": {}",
-                kube_error_message(&e)
-            ))
-        })
+        .map_err(|e| KlvError::from_kube(format!("Error al borrar el pod \"{name}\""), &e))
 }
 
 #[command]
@@ -125,7 +117,7 @@ pub async fn get_containers(
             let kubeconfig = Kubeconfig::read()
                 .map_err(|e| KlvError::new(format!("No se pudo leer kubeconfig: {e}")))?;
             if !kubeconfig.contexts.iter().any(|c| c.name == context) {
-                return Err(KlvError::new(format!("Contexto \"{context}\" no existe")));
+                return Err(KlvError::with_status(404, format!("Contexto \"{context}\" no existe")));
             }
             build_client(context).await.map_err(KlvError::new)?
         }
@@ -137,10 +129,7 @@ pub async fn get_containers(
         lp = lp.labels(sel);
     }
     let list = pods_api.list(&lp).await.map_err(|e| {
-        KlvError::new(format!(
-            "Error al obtener pods del namespace \"{namespace}\": {}",
-            kube_error_message(&e)
-        ))
+        KlvError::from_kube(format!("Error al obtener pods del namespace \"{namespace}\""), &e)
     })?;
 
     let names: BTreeSet<String> = list

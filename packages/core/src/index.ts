@@ -1,4 +1,4 @@
-export { KubeClient, MAX_LOG_READ_CHARS } from './kube-client.js';
+export { KubeClient, MAX_LOG_READ_CHARS, MAX_STREAM_LINE_CHARS } from './kube-client.js';
 export type {
   PodInfo,
   WorkloadKind,
@@ -7,6 +7,7 @@ export type {
   LogOptions,
   LogRead,
   StreamHandlers,
+  LogStream,
   PodWatchEventType,
   PodWatchHandlers,
 } from './kube-client.js';
@@ -16,7 +17,7 @@ export type { K8sNameKind } from './k8s-names.js';
 export { parseLogLine, parseLevel, matchesFilter, compareLogsByTime } from './log-parser.js';
 export type { ParsedLog, LogLevel, LogFilter } from './log-parser.js';
 export { LEVEL_PRIORITY } from './log-parser.js';
-export { parseQuery, matchesQuery, quoteQueryValue } from './query.js';
+export { parseQuery, matchesQuery, quoteQueryValue, MAX_QUERY_DEPTH } from './query.js';
 export type {
   ReservedField,
   QueryField,

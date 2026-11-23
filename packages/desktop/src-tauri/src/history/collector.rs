@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use futures::{AsyncBufReadExt, StreamExt};
+use futures::{AsyncBufRead, AsyncBufReadExt, StreamExt};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
 use kube::runtime::watcher::{self, watcher, Event};
@@ -18,12 +18,18 @@ use tokio::time::sleep;
 
 use super::db::{blocking, micros_to_iso, now_micros, NewRow, Store};
 use super::types::{CollectorStatus, CollectorStream, CollectorTarget, StreamState, TargetState};
-use super::writer::{WriterMsg, WriterTx};
+use super::time::parse_kubelet_micros;
+use super::writer::WriterTx;
 use crate::error::kube_error_message;
 use crate::parser::log_parser::{level_priority, parse_log_line, LogLevel, ParsedLog};
 use crate::state::build_client;
 
 const INITIAL_TAIL: i64 = 1000;
+/// Una línea más larga se entrega truncada a este tamaño y el resto se descarta hasta el salto
+/// de línea (mismo límite, en bytes, que `MAX_STREAM_LINE_CHARS` de `@klv/core`).
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+/// Errores que indican que el contenedor aún no arrancó (mismo patrón que el colector web).
+const NOT_STARTED: [&str; 3] = ["waiting to start", "PodInitializing", "ContainerCreating"];
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Frecuencia máxima con la que se actualiza `lastLineAt` de un stream.
@@ -40,9 +46,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Timestamp de kubelet (µs y texto original) del prefijo de la línea, si es válido.
 fn kubelet_time(log: &ParsedLog) -> Option<(i64, String)> {
     let text = log.k8s_timestamp.as_deref()?;
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|d| (d.timestamp_micros(), text.to_string()))
+    parse_kubelet_micros(text).map(|ts| (ts, text.to_string()))
+}
+
+/// Posición de lectura de un seguidor: el mayor timestamp leído (filtrado o no).
+#[derive(Clone, Copy)]
+struct Position {
+    ts_us: i64,
+    /// Líneas leídas con exactamente `ts_us`. Solo es fiable (`exact`) si la posición se midió en
+    /// este proceso; si viene de la base de datos se desconoce y se descarta todo lo `<= ts_us`.
+    count: u64,
+    exact: bool,
 }
 
 // --- Estado observable ---
@@ -139,11 +153,45 @@ enum Ended {
     Closed,
 }
 
+fn ended_from_message(message: String) -> Ended {
+    if NOT_STARTED.iter().any(|pattern| message.contains(pattern)) {
+        Ended::Waiting(message)
+    } else {
+        Ended::Failed(message)
+    }
+}
+
 fn classify(error: &kube::Error) -> Ended {
-    let message = kube_error_message(error);
-    match error {
-        kube::Error::Api(response) if response.code == 400 => Ended::Waiting(message),
-        _ => Ended::Failed(message),
+    ended_from_message(kube_error_message(error))
+}
+
+/// Lee una línea (con su `\n`) en `buf`, truncada a `MAX_LINE_BYTES`; el exceso se descarta hasta
+/// el salto de línea. `false` = fin del stream sin más datos.
+async fn read_line_capped<R>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<bool>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut seen = false;
+    let mut discarding = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(seen);
+        }
+        seen = true;
+        let (consumed, complete) = match available.iter().position(|b| *b == b'\n') {
+            Some(index) => (index + 1, true),
+            None => (available.len(), false),
+        };
+        if !discarding {
+            let take = consumed.min(MAX_LINE_BYTES.saturating_sub(buf.len()));
+            buf.extend_from_slice(&available[..take]);
+            discarding = take < consumed;
+        }
+        reader.consume_unpin(consumed);
+        if complete {
+            return Ok(true);
+        }
     }
 }
 
@@ -175,13 +223,20 @@ impl Follower {
         !self.exclude.iter().any(|pattern| log.message.contains(pattern.as_str()))
     }
 
-    fn build_row(&self, log: ParsedLog, ts_us: i64, k8s_timestamp: String) -> NewRow {
+    fn build_row(
+        &self,
+        log: ParsedLog,
+        ts_us: i64,
+        from_kubelet: bool,
+        k8s_timestamp: String,
+    ) -> NewRow {
         NewRow {
             context: self.context.clone(),
             namespace: self.namespace.clone(),
             pod: self.pod.clone(),
             container: self.container.clone(),
             ts_us,
+            from_kubelet,
             k8s_timestamp,
             log,
         }
@@ -190,11 +245,22 @@ impl Follower {
     /// Una conexión de seguimiento: lee líneas hasta que el stream termina o falla.
     async fn follow_once(
         &self,
-        params: &LogParams,
-        last_us: &mut Option<i64>,
+        position: &mut Option<Position>,
         received: &mut bool,
     ) -> Ended {
-        let reader = match self.api.log_stream(&self.pod, params).await {
+        // Primera vez: las últimas líneas; después, desde la última posición conocida redondeada
+        // al segundo hacia abajo (las repetidas se descartan más abajo).
+        let params = LogParams {
+            follow: true,
+            timestamps: true,
+            container: Some(self.container.clone()),
+            tail_lines: position.is_none().then_some(INITIAL_TAIL),
+            since_time: position.and_then(|p| {
+                DateTime::<Utc>::from_timestamp_micros(p.ts_us - p.ts_us.rem_euclid(1_000_000))
+            }),
+            ..Default::default()
+        };
+        let reader = match self.api.log_stream(&self.pod, &params).await {
             Ok(reader) => reader,
             Err(e) => return classify(&e),
         };
@@ -202,17 +268,19 @@ impl Follower {
             .set_stream(&self.pod, &self.container, StreamState::Following, None);
         futures::pin_mut!(reader);
 
-        // Al reconectar, `sinceTime` (a segundos) repite líneas ya vistas: se descartan las
-        // que no superan la última posición conocida al empezar esta conexión (guardada o
-        // aún sin volcar a disco).
-        let floor = *last_us;
+        // Al reconectar, `sinceTime` (a segundos) repite líneas ya vistas. Con una posición medida
+        // en este proceso se descartan las anteriores a ella y solo las primeras `count` de ese
+        // instante (cada línea leída cuenta, la filtre el target o no); si la posición viene de la
+        // base de datos se desconoce cuántas se leyeron y se descarta todo lo `<=`.
+        let floor = *position;
+        let mut skipped_at_floor: u64 = 0;
         let mut buf: Vec<u8> = Vec::new();
         let mut last_touch: Option<Instant> = None;
         loop {
             buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => return Ended::Eof,
-                Ok(_) => {
+            match read_line_capped(&mut reader, &mut buf).await {
+                Ok(false) => return Ended::Eof,
+                Ok(true) => {
                     let text = String::from_utf8_lossy(&buf);
                     let line = text.trim_end_matches(['\n', '\r']);
                     if line.trim().is_empty() {
@@ -228,29 +296,58 @@ impl Follower {
                     // Las líneas sin timestamp de kubelet usan la hora de llegada y nunca se
                     // descartan por posición.
                     if let Some((ts, _)) = &kubelet {
-                        if floor.is_some_and(|floor| *ts <= floor) {
-                            continue;
+                        let ts = *ts;
+                        if let Some(floor) = floor {
+                            if ts < floor.ts_us {
+                                continue;
+                            }
+                            if ts == floor.ts_us {
+                                if !floor.exact {
+                                    continue;
+                                }
+                                if skipped_at_floor < floor.count {
+                                    skipped_at_floor += 1;
+                                    continue;
+                                }
+                            }
                         }
-                        *last_us = Some(last_us.map_or(*ts, |previous| previous.max(*ts)));
+                        if position.is_none_or(|current| ts > current.ts_us) {
+                            *position = Some(Position {
+                                ts_us: ts,
+                                count: 1,
+                                exact: true,
+                            });
+                        } else if let Some(current) = position {
+                            if ts == current.ts_us {
+                                current.count += 1;
+                            }
+                        }
                     }
                     if !self.accepts(&log) {
                         continue;
                     }
+                    let from_kubelet = kubelet.is_some();
                     let (ts, k8s_timestamp) = kubelet.unwrap_or_else(|| {
                         let now = now_micros();
                         (now, micros_to_iso(now).unwrap_or_default())
                     });
-                    let row = self.build_row(log, ts, k8s_timestamp);
-                    if self.tx.send(WriterMsg::Row(Box::new(row))).await.is_err() {
+                    let row = self.build_row(log, ts, from_kubelet, k8s_timestamp);
+                    if !self.tx.send_row(row).await {
                         return Ended::Closed;
                     }
                 }
-                Err(e) => return Ended::Failed(e.to_string()),
+                Err(e) => return ended_from_message(e.to_string()),
             }
         }
     }
 
     async fn run(self) {
+        // Posición de reanudación: lo mayor entre lo guardado y lo que sigue pendiente de guardar
+        // (canal + lote retenido). Primero lo pendiente y luego la base de datos: así una fila que
+        // se guarda entre las dos lecturas nunca queda fuera de ambas.
+        let pending_ts = self
+            .tx
+            .pending_ts(&self.context, &self.namespace, &self.pod, &self.container);
         let last_stored = {
             let store = self.store.clone();
             let (context, namespace, pod, container) = (
@@ -261,7 +358,7 @@ impl Follower {
             );
             blocking(move || store.last_ts(&context, &namespace, &pod, &container)).await
         };
-        let mut last_us = match last_stored {
+        let stored = match last_stored {
             Ok(last) => last,
             Err(e) => {
                 eprintln!(
@@ -271,23 +368,16 @@ impl Follower {
                 None
             }
         };
+        let mut position: Option<Position> = stored.max(pending_ts).map(|ts_us| Position {
+            ts_us,
+            count: 0,
+            exact: false,
+        });
 
         let mut delay = MIN_BACKOFF;
         loop {
-            // Primera vez: las últimas líneas; después, desde la última posición conocida
-            // redondeada al segundo hacia abajo (las repetidas se descartan en `follow_once`).
-            let params = LogParams {
-                follow: true,
-                timestamps: true,
-                container: Some(self.container.clone()),
-                tail_lines: last_us.is_none().then_some(INITIAL_TAIL),
-                since_time: last_us.and_then(|us| {
-                    DateTime::<Utc>::from_timestamp_micros(us - us.rem_euclid(1_000_000))
-                }),
-                ..Default::default()
-            };
             let mut received = false;
-            match self.follow_once(&params, &mut last_us, &mut received).await {
+            match self.follow_once(&mut position, &mut received).await {
                 Ended::Closed => return,
                 Ended::Eof => {
                     if self.terminal.load(Ordering::Relaxed) {

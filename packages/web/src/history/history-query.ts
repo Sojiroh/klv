@@ -1,9 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { access } from 'fs/promises';
 import { setImmediate as yieldToEventLoop } from 'timers/promises';
-import { LEVEL_PRIORITY, assertK8sName, matchesQuery, parseLevel, parseLogLine } from '@klv/core';
+import { LEVEL_PRIORITY, MAX_QUERY_DEPTH, assertK8sName, matchesQuery, parseLevel, parseLogLine } from '@klv/core';
 import type { LogLevel, QueryNode } from '@klv/core';
-import { COLUMN_LIST, sqlString } from './history-store';
+import { COLUMN_LIST, sqlString, utcMicros } from './history-store';
 import type { HistoryStore, Row, SegmentRef, SqlParam } from './history-store';
 import { isRecord } from '../type-guards';
 import type { HistoryLog, HistoryQueryResponse } from './history.types';
@@ -13,7 +13,6 @@ const MAX_LIMIT = 10_000;
 const MAX_FILTER_NAMES = 100;
 const SCAN_BUDGET = 200_000;
 const MAX_PAGE = 5000;
-const MAX_QUERY_DEPTH = 64;
 // Un chunk agrupa cubos horarios consecutivos hasta este tamaño de Parquet (un cubo nunca se parte)
 const CHUNK_BYTES = 256 * 1024 * 1024;
 
@@ -93,11 +92,25 @@ function validateAst(node: unknown, depth = 0): QueryNode {
   }
 }
 
+// RFC 3339 con desfase explícito (`Z` o ±hh:mm), fecha de calendario real, hora 0-23, minuto/segundo 0-59 (sin :60) y
+// desfase hasta ±23:59; la fracción admite cualquier número de dígitos y se trunca a microsegundos
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
 function parseTimeBound(name: string, value: unknown): number | undefined {
   if (value == null) return undefined;
-  const ms = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) ? Date.parse(value) : NaN;
-  if (Number.isNaN(ms)) throw new BadRequestException(`${name} debe ser una fecha ISO-8601 válida`);
-  return ms * 1000;
+  const match = typeof value === 'string' ? RFC3339.exec(value) : null;
+  let us: number | null = null;
+  if (match !== null) {
+    const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+    const offsetHour = Number(match[9] ?? 0);
+    const offsetMinute = Number(match[10] ?? 0);
+    if (offsetHour <= 23 && offsetMinute <= 59) {
+      const offsetSeconds = (match[8] === '-' ? -1 : 1) * (offsetHour * 3600 + offsetMinute * 60);
+      us = utcMicros({ year, month, day, hour, minute, second }, match[7] ?? '', offsetSeconds);
+    }
+  }
+  if (us === null) throw new BadRequestException(`${name} debe ser una fecha ISO-8601 válida`);
+  return us;
 }
 
 function parseNames(name: string, kind: 'pod' | 'container', value: unknown): string[] {
@@ -325,22 +338,25 @@ function buildChunks(segments: SegmentRef[]): Chunk[] {
   return chunks;
 }
 
-async function chunkSql(chunk: Chunk, filterSql: string): Promise<string> {
+function chunkSql(chunk: Chunk, files: string[], filterSql: string): string {
   const range: string[] = [];
   if (Number.isFinite(chunk.startUs)) range.push(`ts_us >= ${chunk.startUs}`);
   if (Number.isFinite(chunk.endUs)) range.push(`ts_us < ${chunk.endUs}`);
   const arms = [`SELECT ${COLUMN_LIST} FROM current WHERE ${range.length > 0 ? range.join(' AND ') : 'TRUE'}`];
-
-  // Un segmento puede haberse borrado por retención desde que se listó
-  const present: string[] = [];
-  for (const file of chunk.files) {
-    if (await access(file).then(() => true, () => false)) present.push(file);
-  }
-  if (present.length > 0) arms.push(`SELECT ${COLUMN_LIST} FROM read_parquet([${present.map(sqlString).join(', ')}])`);
+  if (files.length > 0) arms.push(`SELECT ${COLUMN_LIST} FROM read_parquet([${files.map(sqlString).join(', ')}])`);
 
   return `SELECT ${COLUMN_LIST} FROM (${arms.join(' UNION ALL ')}) l
     WHERE ${filterSql} AND (l.ts_us < ? OR (l.ts_us = ? AND l.id < ?))
     ORDER BY l.ts_us DESC, l.id DESC LIMIT ?`;
+}
+
+// Un segmento puede haberse borrado por retención desde que se listó
+async function existingFiles(files: string[]): Promise<string[]> {
+  const present: string[] = [];
+  for (const file of files) {
+    if (await access(file).then(() => true, () => false)) present.push(file);
+  }
+  return present;
 }
 
 // Devuelve las `limit` coincidencias más recientes (orden ascendente) recorriendo los chunks del más nuevo al más
@@ -359,6 +375,10 @@ export async function queryHistory(store: HistoryStore, body: unknown): Promise<
     let pageSize = Math.min(Math.max(request.limit, 100), MAX_PAGE);
     let nextCursor: string | null = null;
     let truncated = false;
+    // Tras reiniciar la instantánea, los segmentos de cada chunk se releen de la base de datos
+    let refreshed = false;
+    const listChunkFiles = async (chunk: Chunk): Promise<string[]> =>
+      (await store.listBucketRange(reader, chunk.startUs, chunk.endUs)).map((segment) => segment.path);
 
     scan: for (let c = 0; c < chunks.length; c++) {
       const chunk = chunks[c];
@@ -368,11 +388,29 @@ export async function queryHistory(store: HistoryStore, body: unknown): Promise<
       // Los siguientes son aún más antiguos que `from`
       if (request.fromUs !== undefined && chunk.endUs <= request.fromUs) break;
 
-      const sql = await chunkSql(chunk, filter.sql);
+      let files = await existingFiles(refreshed ? await listChunkFiles(chunk) : chunk.files);
+      let sql = chunkSql(chunk, files, filter.sql);
+      // Si la consulta falla porque la retención borró un segmento a mitad de camino, se reconstruye sin los que
+      // desaparecieron y se reintenta mientras el conjunto se reduzca; si no falta ninguno, se propaga el error
+      const fetchPage = async (params: SqlParam[]): Promise<Row[]> => {
+        while (true) {
+          try {
+            return await reader.all(sql, params);
+          } catch (err) {
+            if ((await existingFiles(files)).length === files.length) throw err;
+            // El fallo puede haber invalidado la transacción: instantánea nueva y segmentos del chunk releídos
+            // (un rollover intermedio pudo mover filas de `current` a un segmento que no estaba listado)
+            await reader.restart();
+            refreshed = true;
+            files = await existingFiles(await listChunkFiles(chunk));
+            sql = chunkSql(chunk, files, filter.sql);
+          }
+        }
+      };
       const hasOlder = c < chunks.length - 1;
       while (true) {
         const size = Math.min(pageSize, SCAN_BUDGET - scanned);
-        const rows = await reader.all(sql, [...filter.params, position.tsUs, position.tsUs, position.id, size]);
+        const rows = await fetchPage([...filter.params, position.tsUs, position.tsUs, position.id, size]);
 
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i];

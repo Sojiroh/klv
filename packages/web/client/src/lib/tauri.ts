@@ -19,10 +19,6 @@ interface RouteMatch {
   args: Record<string, unknown>;
 }
 
-function optionalNumber(params: URLSearchParams, key: string): number | undefined {
-  return params.has(key) ? Number(params.get(key)) : undefined;
-}
-
 function optionalBoolean(params: URLSearchParams, key: string): boolean | undefined {
   return params.has(key) ? params.get(key) === 'true' : undefined;
 }
@@ -58,8 +54,9 @@ function matchRoute(url: string): RouteMatch | null {
       args: {
         namespace: decodeURIComponent(containerLogMatch[1]),
         container: decodeURIComponent(containerLogMatch[2]),
-        tail: optionalNumber(params, 'tail'),
-        since: optionalNumber(params, 'since'),
+        // Raw query-string text: the Rust command validates it like the web API (400 on anything but digits)
+        tail: params.get('tail') ?? undefined,
+        since: params.get('since') ?? undefined,
         level: params.get('level') || undefined,
         search: params.get('search') || undefined,
         previous: optionalBoolean(params, 'previous'),
@@ -76,8 +73,8 @@ function matchRoute(url: string): RouteMatch | null {
           namespace: decodeURIComponent(podLogMatch[1]),
           pod: decodeURIComponent(podLogMatch[2]),
           container: params.get('container') || undefined,
-          tail: optionalNumber(params, 'tail'),
-          since: optionalNumber(params, 'since'),
+          tail: params.get('tail') ?? undefined,
+          since: params.get('since') ?? undefined,
           level: params.get('level') || undefined,
           search: params.get('search') || undefined,
           previous: optionalBoolean(params, 'previous'),

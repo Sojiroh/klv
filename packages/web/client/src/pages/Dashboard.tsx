@@ -12,19 +12,20 @@ const TRANSITION_POLL_MS = 3000;
 
 export default function Dashboard() {
   const { namespaces, namespace, setNamespace, error: namespacesError } = useNamespaces();
-  const { data: pods, loading, error: podsError, reload } = useApi<Pod[]>(
+  const { data: pods, loading, error: podsError, settled, reload } = useApi<Pod[]>(
     namespace ? `/api/pods/${encodeURIComponent(namespace)}` : null,
   );
   const [actionError, setActionError] = useState<string | null>(null);
 
   const transitioning = pods?.some((p) => p.status === 'Pending' || p.status === 'Terminating') ?? false;
 
-  // Each response schedules the next poll while a pod is starting or terminating
+  // Every response (a failed one too, which keeps the same data) schedules the next poll while the last known
+  // pods are starting or terminating; a single timer is pending at any time
   useEffect(() => {
     if (!transitioning) return;
     const timer = setTimeout(reload, TRANSITION_POLL_MS);
     return () => clearTimeout(timer);
-  }, [transitioning, pods, reload]);
+  }, [transitioning, settled, reload]);
 
   const changeNamespace = (ns: string) => {
     setActionError(null);
@@ -45,19 +46,23 @@ export default function Dashboard() {
     }
   };
 
-  const groups = Object.values(
-    (pods ?? []).reduce<Record<string, ContainerGroup>>((acc, pod) => {
-      for (const c of pod.containers) {
-        if (!acc[c]) acc[c] = { container: c, podCount: 0, restarts: 0, statuses: [], pods: [] };
-        const restarts = pod.restarts[c] ?? 0;
-        acc[c].podCount++;
-        acc[c].restarts += restarts;
-        acc[c].pods.push({ name: pod.name, status: pod.status, age: pod.age, restarts });
-        if (!acc[c].statuses.includes(pod.status)) acc[c].statuses.push(pod.status);
+  // A Map: container names such as `constructor` are valid and must not hit inherited object members
+  const groupsByContainer = new Map<string, ContainerGroup>();
+  for (const pod of pods ?? []) {
+    for (const c of pod.containers) {
+      let group = groupsByContainer.get(c);
+      if (!group) {
+        group = { container: c, podCount: 0, restarts: 0, statuses: [], pods: [] };
+        groupsByContainer.set(c, group);
       }
-      return acc;
-    }, {}),
-  );
+      const restarts = (Object.hasOwn(pod.restarts, c) ? pod.restarts[c] : undefined) ?? 0;
+      group.podCount++;
+      group.restarts += restarts;
+      group.pods.push({ name: pod.name, status: pod.status, age: pod.age, restarts });
+      if (!group.statuses.includes(pod.status)) group.statuses.push(pod.status);
+    }
+  }
+  const groups = [...groupsByContainer.values()];
 
   const error = namespacesError ?? podsError;
 
